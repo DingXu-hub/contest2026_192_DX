@@ -967,6 +967,11 @@ int main(int argc, char *argv[])
 
     renderer_init(&g_renderer);
     pm_init(&g_pm);
+
+#if APP_DEMO_SEED
+    /* Probe configuration check: /data is a tmpfs mounted by the board
+     * bringup; the KV store lives there (see kv_store.c). */
+#endif
     dual_core_init();
     dual_core_set_sensor_callback(NULL);
     dual_core_set_bt_callback(NULL);
@@ -1023,6 +1028,31 @@ int main(int argc, char *argv[])
                 NET_TASK_STACKSIZE, net_stat_task, NULL);
 #endif
     task_create("huangshan_ai", 120, 6144, ai_task, NULL);
+
+#if APP_DEMO_SEED
+    /* One-shot demo seed (default off): gives the stats page a few
+     * plausible runs for screenshots/video, and parks the UI on that page.
+     * Switch APP_DEMO_SEED on in app_diag.h, flash once, then flash the
+     * normal build again (the watch stores the KV in RAM, so the entries
+     * live until the next reboot). */
+    if (kv_history_count() == 0)
+    {
+        static const struct { float m; uint32_t s; float asc; } demo[] = {
+            { 5020.0f, 1685u, 42.0f },
+            { 3120.0f, 1042u, 18.0f },
+            { 7410.0f, 2510u, 96.0f },
+            { 2050.0f,  690u,  9.0f },
+            { 6330.0f, 2140u, 61.0f },
+        };
+        int di;
+
+        for (di = 0; di < (int)(sizeof(demo) / sizeof(demo[0])); di++)
+            kv_history_push(demo[di].m, demo[di].s, demo[di].asc);
+        printf("[App] demo seed: %d runs in the history\n",
+               kv_history_count());
+        page_set(&g_app, PAGE_STATS);
+    }
+#endif
 
     /* supervisor heartbeat */
     uint32_t hb = get_time_ms();

@@ -104,7 +104,12 @@ int kv_set_str(const char *key, const char *value)
         if (!vend)
             vend = vstart + strlen(vstart);
         rest = *vend ? vend + 1 : vend;
-        prefix = (size_t)(vstart - s_kv_buf);
+        /* replace: copy everything up to the KEY (not up to the value -
+         * vstart points past "key=", so back off keylen+1), then the new
+         * line, then the rest.  Getting this wrong duplicated the key
+         * ("run.count=run.count=1") and every overwritten key then read
+         * back as 0. */
+        prefix = (size_t)(vstart - s_kv_buf) - strlen(key) - 1;
         rest_len = strlen(rest);
 
         memcpy(o, s_kv_buf, prefix);
