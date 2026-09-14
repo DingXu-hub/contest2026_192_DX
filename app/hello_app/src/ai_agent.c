@@ -200,6 +200,31 @@ static void proactive_check(void)
 
 static void handle_line(char *line)
 {
+    /* Tolerate a missing command prefix: the console UART can drop the
+     * first byte of a burst coming from the PC, which turned "!status"
+     * into "status" (answered with help).  A bare tool name is
+     * therefore treated exactly like "!name". */
+    if (line[0] != '?' && line[0] != '!' && line[0] != '@')
+    {
+        static const char *const bare[] = { "start", "stop", "status",
+                                            "timer", "tip", "help", NULL };
+        int i;
+
+        for (i = 0; bare[i]; i++)
+        {
+            size_t n = strlen(bare[i]);
+
+            if (!strncmp(line, bare[i], n) &&
+                (line[n] == '\0' || line[n] == ' '))
+            {
+                /* the caller always leaves at least one spare byte */
+                memmove(line + 1, line, strlen(line) + 1);
+                line[0] = '!';
+                break;
+            }
+        }
+    }
+
     if (line[0] == '?')
     {
         char prompt[AI_PROMPT_MAX];
