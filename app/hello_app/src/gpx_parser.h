@@ -5,8 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define GPX_MAX_TRACKPOINTS  4096
-#define GPX_MAX_WAYPOINTS     256
+#define GPX_MAX_TRACKPOINTS  1024   /* 4096 -> 1024: BSS saved ~100 KB */
+#define GPX_MAX_WAYPOINTS     128
 #define GPX_MAX_NAME_LEN      128
 
 typedef struct {

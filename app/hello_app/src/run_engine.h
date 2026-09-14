@@ -23,7 +23,7 @@
 #define RUN_DEFAULT_STRIDE_M   0.75f
 
 /* live track ring buffer (1 point per second -> ~34 min at 2048) */
-#define RUN_TRACK_MAX         2048
+#define RUN_TRACK_MAX         1024   /* 2048 -> 1024: BSS saved 16 KB */
 #define RUN_TRACK_DT_MS       1000
 
 typedef enum {

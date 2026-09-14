@@ -39,6 +39,7 @@
 #include "route_renderer.h"
 #include "touch_handler.h"
 #include "ai_agent.h"
+#include "app_diag.h"
 #include "devshot.h"
 #include "sensor_manager.h"
 #include "power_manager.h"
@@ -550,10 +551,12 @@ static int render_task(int argc, char *argv[])
             measured_fps = (float)frame_count * 1000.0f /
                            (float)(frame_start - stats_ms);
             frame_count = 0;
+#if APP_DIAG_VERBOSE
             printf("[Render] fps=%.0f page=%d est=%dmA bl=%d%% gpu=%d\n",
                    measured_fps, g_app.ui.current,
                    g_pm.current_ma_estimate, g_pm.backlight_pct,
                    g_renderer.gpu_ok);
+#endif
             stats_ms = frame_start;
         }
 
@@ -1035,8 +1038,10 @@ int main(int argc, char *argv[])
             touch_diag(&m, &t, &id, &r0, &r2, &r4, &r8);
             if (t > 0)
             {
+#if APP_DIAG_VERBOSE
                 printf("[TOUCH!] td=%d raw=[%02x %02x %02x %02x]\n",
                        t, r0 & 0xff, r2 & 0xff, r4 & 0xff, r8 & 0xff);
+#endif
             }
         }
 
@@ -1051,11 +1056,9 @@ int main(int argc, char *argv[])
                 uint32_t tm = 0, tu = 0;
                 uint32_t lf = touch_get_flagstats(&tm, &tu);
                 uint32_t np = touch_get_npoints();
-#if HUANGSHAN_DEV_SHOT
-                if (!g_print_silent)
-#endif
-                    if (!g_net_silent)
-                printf("[Alive] st=%d scr=%d page=%d imu=%d "
+#if APP_DIAG_VERBOSE
+                if (!g_net_silent)
+                    printf("[Alive] st=%d scr=%d page=%d imu=%d "
                        "a=(%.2f,%.2f,%.2f) gz=%.1f pit=%.1f raise=%d "
                        "mag=(%d,%d,%d) h=%.0f lux=%d "
                        "tp(m=%d td=%d id=%d r:[%02x %02x %02x %02x]) "
@@ -1076,6 +1079,7 @@ int main(int argc, char *argv[])
                    (unsigned)downs, (unsigned long)tm, (unsigned long)tu,
                    (unsigned long)lf, (unsigned long)np,
                    g_pm.backlight_pct);
+#endif
             }
             hb = get_time_ms();
         }

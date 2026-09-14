@@ -41,6 +41,7 @@ struct lsm6dsl_sensor_data_s
 #include "madgwick.h"
 #include "fusion/Fusion.h"
 #include "kv_store.h"
+#include "app_diag.h"
 #include "devshot.h"
 
 /* set while the PPP link carries binary frames */
@@ -838,6 +839,7 @@ void sensor_update(sensor_manager_t *mgr)
 #if HUANGSHAN_DEV_SHOT
             if (!g_print_silent)
 #endif
+#if APP_DIAG_VERBOSE
             printf("[Fuse] yaw=%.0f mx=%.0f my=%.0f mz=%.0f ok=%d cal=%d off=(%.0f,%.0f,%.0f) gz=%.1f\n",
                    mgr->heading_deg,
                    mgr->mag.x_g, mgr->mag.y_g, mgr->mag.z_g,
@@ -845,6 +847,7 @@ void sensor_update(sensor_manager_t *mgr)
                    mgr->mag.offset_x, mgr->mag.offset_y, mgr->mag.offset_z,
                    mgr->imu.gz);
             dbg++;
+#endif
         }
     }
 
@@ -952,6 +955,7 @@ void sensor_update(sensor_manager_t *mgr)
 
         /* 2 Hz diagnostic: Fusion yaw/roll/pitch vs the flat reference
          * formula; raw = pre-remap chip values; ea/em = residual errors */
+#if APP_DIAG_VERBOSE
         {
             static uint32_t dbg_ms;
             if (now - dbg_ms >= 500 && !g_net_silent
@@ -983,6 +987,7 @@ void sensor_update(sensor_manager_t *mgr)
                        (int)mgr->mag_dropped);
             }
         }
+#endif
     }
 
     if (now - mgr->last_als_ms >= ALS_SAMPLE_INTERVAL_MS)
