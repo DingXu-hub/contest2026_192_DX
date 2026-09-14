@@ -77,6 +77,15 @@ void ai_agent_notify(const char *src, const char *text)
         g_ctx->ui.dirty = true;
 }
 
+/* hide the card early (user tapped it) */
+void ai_agent_dismiss(void)
+{
+    g_ai.active = false;
+    g_ai.notify[0] = '\0';
+    if (g_ctx)
+        g_ctx->ui.dirty = true;
+}
+
 /* ---------------- tools ---------------- */
 
 static void fill_status(char *out, size_t outlen)
@@ -262,10 +271,12 @@ void ai_agent_task(void)
         pfd.events = POLLIN;
         pfd.revents = 0;
 
+        /* NOTE: poll-gated read.  The console driver does NOT honour
+         * O_NONBLOCK (an unconditional read() blocks the whole agent
+         * task), so only drain after poll reported POLLIN - and drain
+         * completely, anything left unread delays the next byte. */
         if (poll(&pfd, 1, 200) > 0 && (pfd.revents & POLLIN))
         {
-            /* poll only reports arrival: drain the RX buffer completely,
-             * otherwise the bytes after the first one stay unread */
             for (;;)
             {
                 char buf[128];

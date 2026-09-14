@@ -560,24 +560,313 @@ void ui_badge(pixel_t *buf, int buf_w, int buf_h,
 
 void ui_dots(pixel_t *buf, int buf_w, int buf_h, page_id_t cur)
 {
+    /* modern indicator: active page = accent pill, others = faint dots */
     int i;
     int n = PAGE_COUNT;
-    int gap = 12;
+    int gap = 14;
     int x0 = buf_w / 2 - ((n - 1) * gap) / 2;
-    int y = buf_h - 10;
+    int y = buf_h - 18;
+    pixel_t acc = ui_accent_for(cur);
+
     for (i = 0; i < n; i++)
     {
         int cx = x0 + i * gap;
-        bool on = (i == (int)cur);
-        if (on)
-        {
-            int j;
-            for (j = -2; j <= 2; j++)
-                buf[y * buf_w + cx + j] = UI_ACCENT;
-        }
+        if (i == (int)cur)
+            ui_capsule(buf, buf_w, buf_h, cx - 8, y - 3, 17, 6, acc);
         else
+            ui_dot(buf, buf_w, buf_h, cx, y, 2, UI_TEXT_FAINT);
+    }
+}
+
+/* ================================================================== *
+ * v4 modern primitives
+ * ================================================================== */
+
+pixel_t ui_accent_for(page_id_t page)
+{
+    switch (page)
+    {
+    case PAGE_WATCH:    return UI_ACC_CYAN;
+    case PAGE_RUN:      return UI_ACC_LIME;
+    case PAGE_ROUTE:    return UI_ACC_BLUE;
+    case PAGE_COMPASS:  return UI_ACC_CYAN;
+    case PAGE_STATS:    return UI_ACC_VIOLET;
+    case PAGE_SETTINGS: return UI_ACC_ORANGE;
+    default:            return UI_ACC_CYAN;
+    }
+}
+
+pixel_t ui_lerp565(pixel_t a, pixel_t b, float t)
+{
+    int ar, ag, ab, br, bg, bb, r, g, bl;
+
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    ar = (a >> 11) & 0x1f; ag = (a >> 5) & 0x3f; ab = a & 0x1f;
+    br = (b >> 11) & 0x1f; bg = (b >> 5) & 0x3f; bb = b & 0x1f;
+    r  = ar + (int)((float)(br - ar) * t + 0.5f);
+    g  = ag + (int)((float)(bg - ag) * t + 0.5f);
+    bl = ab + (int)((float)(bb - ab) * t + 0.5f);
+    return (pixel_t)((r << 11) | (g << 5) | bl);
+}
+
+void ui_capsule(pixel_t *buf, int buf_w, int buf_h,
+                int x, int y, int w, int h, pixel_t color)
+{
+    int r = (w < h ? w : h) / 2;
+    if (r < 1) r = 1;
+    rrect_px(buf, buf_w, buf_h, x, y, w, h, r, color);
+}
+
+void ui_dot(pixel_t *buf, int buf_w, int buf_h,
+            int cx, int cy, int r, pixel_t color)
+{
+    if (r < 1) r = 1;
+    rrect_px(buf, buf_w, buf_h, cx - r, cy - r, 2 * r + 1, 2 * r + 1,
+             r, color);
+}
+
+void ui_card_top(pixel_t *buf, int buf_w, int buf_h,
+                 int x, int y, int w, int h, int r,
+                 pixel_t fill, pixel_t edge)
+{
+    rrect_px(buf, buf_w, buf_h, x, y, w, h, r, fill);
+    ui_rrect(buf, buf_w, buf_h, x, y, w, h, r, edge);
+}
+
+void ui_grad_v(pixel_t *buf, int buf_w, int buf_h,
+               int x, int y, int w, int h, pixel_t c0, pixel_t c1)
+{
+    int j;
+    for (j = 0; j < h; j++)
+    {
+        float t = (h > 1) ? (float)j / (float)(h - 1) : 0.0f;
+        ui_hline(buf, buf_w, buf_h, x, y + j, w, ui_lerp565(c0, c1, t));
+    }
+}
+
+void ui_arc(pixel_t *buf, int buf_w, int buf_h,
+            int cx, int cy, int r, int thick, float frac,
+            pixel_t c0, pixel_t c1, pixel_t track)
+{
+    int ri, ro, x, y;
+
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    if (thick < 2) thick = 2;
+    ri = r - thick / 2;
+    ro = r + thick / 2;
+    if (ri < 1) ri = 1;
+
+    for (y = -ro; y <= ro; y++)
+    {
+        for (x = -ro; x <= ro; x++)
         {
-            buf[y * buf_w + cx] = UI_TEXT_FAINT;
+            int d = x * x + y * y;
+            int px = cx + x, py = cy + y;
+            pixel_t c;
+            float ang, t;
+
+            if (px < 0 || px >= buf_w || py < 0 || py >= buf_h)
+                continue;
+            if (d > ro * ro || d < ri * ri)
+                continue;
+
+            ang = atan2f((float)y, (float)x) * 0.159154943f; /* /2pi */
+            if (ang < 0.0f) ang += 1.0f;
+            t = ang - 0.25f;               /* 0 at 12 o'clock, cw */
+            if (t < 0.0f) t += 1.0f;
+
+            if (frac > 0.001f && t <= frac)
+                c = ui_lerp565(c0, c1, t / frac);
+            else
+                c = track;
+            buf[py * buf_w + px] = c;
         }
+    }
+
+    /* rounded tip so the arc reads as a stroke, not a wedge */
+    if (frac > 0.002f)
+    {
+        float a = (frac + 0.25f) * 6.2831853f;
+        ui_dot(buf, buf_w, buf_h,
+               cx + (int)(cosf(a) * (float)r + 0.5f),
+               cy + (int)(sinf(a) * (float)r + 0.5f),
+               thick / 2, c1);
+    }
+}
+
+void ui_btn(pixel_t *buf, int buf_w, int buf_h,
+            int cx, int y, int w, int h, const char *label,
+            pixel_t fill, pixel_t fg)
+{
+    int x = cx - w / 2;
+    int tw = (int)strlen(label) * 12;
+
+    ui_capsule(buf, buf_w, buf_h, x, y, w, h, fill);
+    ui_text_scaled(buf, buf_w, buf_h, cx - tw / 2, y + (h - 14) / 2,
+                   label, 2, fg);
+}
+
+void ui_btn_ghost(pixel_t *buf, int buf_w, int buf_h,
+                  int cx, int y, int w, int h, const char *label,
+                  pixel_t accent)
+{
+    int x = cx - w / 2;
+    int tw = (int)strlen(label) * 12;
+
+    ui_card_top(buf, buf_w, buf_h, x, y, w, h, h / 2, UI_CARD, accent);
+    ui_text_scaled(buf, buf_w, buf_h, cx - tw / 2, y + (h - 14) / 2,
+                   label, 2, accent);
+}
+
+void ui_status_pill(pixel_t *buf, int buf_w, int buf_h,
+                    int cx, int y, const char *label,
+                    pixel_t fg, pixel_t bg, pixel_t dot)
+{
+    int tw = (int)strlen(label) * 12;
+    int w = tw + 24 + (dot ? 12 : 0);
+    int x = cx - w / 2;
+    int tx = x + 12 + (dot ? 12 : 0);
+
+    if (bg)
+        ui_capsule(buf, buf_w, buf_h, x, y, w, 26, bg);
+    if (dot)
+        ui_dot(buf, buf_w, buf_h, x + 17, y + 13, 3, dot);
+    ui_text_scaled(buf, buf_w, buf_h, tx, y + 6, label, 2, fg);
+}
+
+void ui_text_tracked(pixel_t *buf, int buf_w, int buf_h,
+                     int x, int y, const char *s, int scale,
+                     pixel_t color, int tracking)
+{
+    char tmp[2];
+
+    tmp[1] = '\0';
+    while (*s)
+    {
+        tmp[0] = *s;
+        ui_text_scaled(buf, buf_w, buf_h, x, y, tmp, scale, color);
+        x += 6 * scale + tracking;
+        s++;
+    }
+}
+
+void ui_label_center(pixel_t *buf, int buf_w, int buf_h,
+                     int y, const char *s, int scale,
+                     pixel_t color, int tracking)
+{
+    int n = (int)strlen(s);
+    int w = n * 6 * scale + (n > 0 ? (n - 1) * tracking : 0);
+
+    ui_text_tracked(buf, buf_w, buf_h, (buf_w - w) / 2, y, s, scale,
+                    color, tracking);
+}
+
+/* ---- rounded stroke digits ---------------------------------------- */
+
+/* segment bits: A=0x01 B=0x02 C=0x04 D=0x08 E=0x10 F=0x20 G=0x40 */
+static const uint8_t s_rseg[10] = {
+    0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f
+};
+
+static void rd_seg(pixel_t *buf, int bw, int bh,
+                   int x, int y, int w, int h, pixel_t c)
+{
+    int r = (w < h ? w : h) / 2;
+    if (r < 1) r = 1;
+    if (w < 1 || h < 1) return;
+    rrect_px(buf, bw, bh, x, y, w, h, r, c);
+}
+
+static int rd_t(int h)
+{
+    int t = h / 7;
+    return t < 3 ? 3 : t;
+}
+
+static int rd_w(int h)
+{
+    int w = (h * 10) / 16;
+    int t = rd_t(h);
+    return w < t + 2 ? t + 2 : w;
+}
+
+static int rd_adv(char c, int h)
+{
+    int t = rd_t(h);
+    int w = rd_w(h);
+
+    if (c == ':') return t * 2;
+    if (c == '.') return t + t / 2;
+    if (c == ' ') return w / 2;
+    return w + (t * 3) / 4;
+}
+
+int ui_rnumber_w(const char *s, int h)
+{
+    int total = 0, n = 0;
+    int t = rd_t(h);
+
+    while (s[n])
+    {
+        total += rd_adv(s[n], h);
+        n++;
+    }
+    if (n > 0) total -= (t * 3) / 4;
+    return total;
+}
+
+void ui_rnumber(pixel_t *buf, int buf_w, int buf_h,
+                int cx, int y, const char *s, int h, pixel_t color)
+{
+    int x = cx - ui_rnumber_w(s, h) / 2;
+    int t = rd_t(h);
+    int w = rd_w(h);
+    int half = h / 2;
+    int sl = h / 2 - t;      /* vertical segment length */
+
+    if (sl < 1) sl = 1;
+
+    for (; *s; s++)
+    {
+        char ch = *s;
+        uint8_t seg;
+
+        if (ch == ':')
+        {
+            rd_seg(buf, buf_w, buf_h, x + t / 2, y + h / 4,
+                   t, t, color);
+            rd_seg(buf, buf_w, buf_h, x + t / 2, y + (3 * h) / 4 - t,
+                   t, t, color);
+        }
+        else if (ch == '.')
+        {
+            rd_seg(buf, buf_w, buf_h, x + t / 2, y + h - t, t, t, color);
+        }
+        else if (ch == '-')
+        {
+            rd_seg(buf, buf_w, buf_h, x, y + half - t / 2, w, t, color);
+        }
+        else if (ch >= '0' && ch <= '9')
+        {
+            seg = s_rseg[ch - '0'];
+            if (seg & 0x01) rd_seg(buf, buf_w, buf_h, x + t / 2, y,
+                                   w - t, t, color);
+            if (seg & 0x02) rd_seg(buf, buf_w, buf_h, x + w - t, y + t / 2,
+                                   t, sl, color);
+            if (seg & 0x04) rd_seg(buf, buf_w, buf_h, x + w - t,
+                                   y + half + t / 2, t, sl, color);
+            if (seg & 0x08) rd_seg(buf, buf_w, buf_h, x + t / 2, y + h - t,
+                                   w - t, t, color);
+            if (seg & 0x10) rd_seg(buf, buf_w, buf_h, x, y + half + t / 2,
+                                   t, sl, color);
+            if (seg & 0x20) rd_seg(buf, buf_w, buf_h, x, y + t / 2,
+                                   t, sl, color);
+            if (seg & 0x40) rd_seg(buf, buf_w, buf_h, x + t / 2,
+                                   y + half - t / 2, w - t, t, color);
+        }
+
+        x += rd_adv(ch, h);
     }
 }

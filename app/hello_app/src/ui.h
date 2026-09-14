@@ -18,16 +18,30 @@
  * design tokens (deep-dark sport theme)
  * ------------------------------------------------------------------ */
 
-#define UI_BG             PIXEL_BLACK
-#define UI_CARD           0x2124      /* dark slate card            */
-#define UI_CARD_EDGE      0x39E7      /* slightly lighter card edge */
-#define UI_ACCENT         0x57E0      /* fluorescent green          */
-#define UI_ACCENT_ORANGE  0xFD20      /* sport orange               */
-#define UI_ACCENT_BLUE    0x2C7F      /* electric blue              */
-#define UI_ACCENT_RED     PIXEL_RED
+/* v4 "modern" palette: AMOLED near-black, low-saturation slate cards,
+ * one saturated accent per page (see ui_accent_for()). */
+#define UI_BG             0x0821      /* near-black blue  #080B12   */
+#define UI_CARD           0x10C3      /* slate card       #14181F   */
+#define UI_CARD_HI        0x18E5      /* raised card      #1A2030   */
+#define UI_CARD_EDGE      0x2946      /* hairline         #2A323C   */
+#define UI_TRACK          0x1A45      /* ring/bar track   #1B2028   */
 #define UI_TEXT           PIXEL_WHITE
-#define UI_TEXT_DIM       PIXEL_GRAY
-#define UI_TEXT_FAINT     0x5AEB
+#define UI_TEXT_DIM       0x9D36      /* #9AA4B2 */
+#define UI_TEXT_FAINT     0x5B2E      /* #5A6472 */
+
+/* page accents */
+#define UI_ACC_LIME       0xCFAB      /* #C8F45A run / activity     */
+#define UI_ACC_CYAN       0x4F1A      /* #4CE0D2 time / compass     */
+#define UI_ACC_BLUE       0x4CDF      /* #4E9BFF map / route        */
+#define UI_ACC_VIOLET     0xAC5F      /* #A98BFF stats / history    */
+#define UI_ACC_ORANGE     0xFD07      /* #FFA23A pause / warning    */
+#define UI_ACC_RED        0xFACB      /* #FF5A5F stop / alert       */
+
+/* legacy aliases (v3 call sites) */
+#define UI_ACCENT         UI_ACC_LIME
+#define UI_ACCENT_ORANGE  UI_ACC_ORANGE
+#define UI_ACCENT_BLUE    UI_ACC_BLUE
+#define UI_ACCENT_RED     UI_ACC_RED
 
 /* ------------------------------------------------------------------ *
  * pages
@@ -147,7 +161,66 @@ void ui_badge(pixel_t *buf, int buf_w, int buf_h,
               int cx, int y, const char *s,
               pixel_t fg, pixel_t bg);
 
-/* page indicator dots at the bottom */
+/* modern page indicator: elongated pill for the active page */
 void ui_dots(pixel_t *buf, int buf_w, int buf_h, page_id_t cur);
+
+/* ------------------------------------------------------------------ *
+ * v4 modern primitives
+ * ------------------------------------------------------------------ */
+
+/* accent colour assigned to a page (semantic, per-screen identity) */
+pixel_t ui_accent_for(page_id_t page);
+
+/* 5-6-5 blend helper */
+pixel_t ui_lerp565(pixel_t a, pixel_t b, float t);
+
+/* filled capsule (pill) - the modern button/badge shape */
+void ui_capsule(pixel_t *buf, int buf_w, int buf_h,
+                int x, int y, int w, int h, pixel_t color);
+
+/* filled rounded disc */
+void ui_dot(pixel_t *buf, int buf_w, int buf_h,
+            int cx, int cy, int r, pixel_t color);
+
+/* card with a hairline border (subtle elevation, no shadows needed) */
+void ui_card_top(pixel_t *buf, int buf_w, int buf_h,
+                 int x, int y, int w, int h, int r,
+                 pixel_t fill, pixel_t edge);
+
+/* vertical gradient fill */
+void ui_grad_v(pixel_t *buf, int buf_w, int buf_h,
+               int x, int y, int w, int h, pixel_t c0, pixel_t c1);
+
+/* thick progress arc with a gradient sweep and a rounded tip */
+void ui_arc(pixel_t *buf, int buf_w, int buf_h,
+            int cx, int cy, int r, int thick, float frac,
+            pixel_t c0, pixel_t c1, pixel_t track);
+
+/* priority / secondary action buttons (capsule) */
+void ui_btn(pixel_t *buf, int buf_w, int buf_h,
+            int cx, int y, int w, int h, const char *label,
+            pixel_t fill, pixel_t fg);
+void ui_btn_ghost(pixel_t *buf, int buf_w, int buf_h,
+                  int cx, int y, int w, int h, const char *label,
+                  pixel_t accent);
+
+/* status pill: optional leading dot + 2x label (bg = 0 -> no pill) */
+void ui_status_pill(pixel_t *buf, int buf_w, int buf_h,
+                    int cx, int y, const char *label,
+                    pixel_t fg, pixel_t bg, pixel_t dot);
+
+/* tracked (letter-spaced) micro label, modern typographic detail */
+void ui_text_tracked(pixel_t *buf, int buf_w, int buf_h,
+                     int x, int y, const char *s, int scale,
+                     pixel_t color, int tracking);
+void ui_label_center(pixel_t *buf, int buf_w, int buf_h,
+                     int y, const char *s, int scale,
+                     pixel_t color, int tracking);
+
+/* rounded stroke digits: replaces the dated 7-segment numerals.
+ * h = digit height in pixels; ':' '.' '-' ' ' are supported. */
+int  ui_rnumber_w(const char *s, int h);
+void ui_rnumber(pixel_t *buf, int buf_w, int buf_h,
+                int cx, int y, const char *s, int h, pixel_t color);
 
 #endif /* __HUANGSHAN_UI_H */

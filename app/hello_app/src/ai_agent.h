@@ -44,6 +44,7 @@ void  ai_agent_init(void);
 void  ai_agent_set_context(void *app_ctx);
 void  ai_agent_task(void);
 void  ai_agent_notify(const char *src, const char *text);
+void  ai_agent_dismiss(void);
 ai_agent_t *ai_agent_get(void);
 
 #endif /* __AI_AGENT_H */

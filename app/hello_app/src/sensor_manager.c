@@ -836,10 +836,10 @@ void sensor_update(sensor_manager_t *mgr)
         static int dbg = 0;
         if (dbg < 40)
         {
+#if APP_DIAG_VERBOSE
 #if HUANGSHAN_DEV_SHOT
             if (!g_print_silent)
 #endif
-#if APP_DIAG_VERBOSE
             printf("[Fuse] yaw=%.0f mx=%.0f my=%.0f mz=%.0f ok=%d cal=%d off=(%.0f,%.0f,%.0f) gz=%.1f\n",
                    mgr->heading_deg,
                    mgr->mag.x_g, mgr->mag.y_g, mgr->mag.z_g,

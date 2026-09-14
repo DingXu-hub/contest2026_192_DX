@@ -482,7 +482,9 @@ static int render_task(int argc, char *argv[])
 #if HUANGSHAN_DEV_SHOT
         {
             static uint32_t dms;
-            if (frame_start - dms >= 5000 && g_renderer.cbuf &&
+            /* one 390x450 PPM frame is ~526 KB -> >5 s on the 1 Mbaud
+             * console, so leave a wide gap or frames arrive torn */
+            if (frame_start - dms >= 20000 && g_renderer.cbuf &&
                 g_pm.screen_on)
             {
                 dms = frame_start;
