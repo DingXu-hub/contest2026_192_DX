@@ -1,7 +1,65 @@
-# Contest 2026 team 000 hello app
-if(CONFIG_LVX_USE_DEMO_CONTEST2026_000_HELLO_APP)
-  nuttx_add_application(
-    NAME hello_app
-    SRCS hello_app_main.c
-    STACKSIZE 2048)
+# Huangshan Running smartwatch (contest 2026 team 192)
+# Mapped via manifest to packages/demos/contest2026_192_hello_app
+if(CONFIG_LVX_USE_DEMO_CONTEST2026_192_HELLO_APP)
+
+set(SRCS
+    src/main.c
+    src/gpx_parser.c
+    src/route_renderer.c
+    src/gpu_epic.c
+    src/touch_handler.c
+    src/sensor_manager.c
+    src/madgwick.c
+    src/mag_mmc5603.c
+    src/als_ltr303.c
+    src/lcd_control.c
+    src/power_manager.c
+    src/dual_core.c
+    src/ui.c
+    src/run_engine.c
+    src/kv_store.c
+    src/pages.c
+    src/net_link.c
+    src/ppp_link.c
+    src/ai_agent.c
+    src/fusion/FusionAhrs.c
+)
+
+if(CONFIG_LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_USE_BT_PAN)
+    list(APPEND SRCS src/bt_pan.c)
 endif()
+
+set(HUANGSHAN_INCDIRS ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# The ePicasso (EPIC) GPU wrapper needs the chip HAL headers.
+if(CONFIG_LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_GPU_ACCEL AND DEFINED NUTTX_CHIP_ABS_DIR)
+  list(APPEND HUANGSHAN_INCDIRS
+    ${NUTTX_CHIP_ABS_DIR}/include
+    ${NUTTX_CHIP_ABS_DIR}/../drivers/Include
+    ${NUTTX_CHIP_ABS_DIR}/../drivers/cmsis/Include
+    ${NUTTX_CHIP_ABS_DIR}/../drivers/cmsis/sf32lb52x
+    ${NUTTX_CHIP_ABS_DIR}/../external/CMSIS/Include
+    ${NUTTX_CHIP_ABS_DIR}/../boards/include/config/sf32lb52x)
+endif()
+
+set(HUANGSHAN_DEFS)
+if(CONFIG_LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_GPU_ACCEL AND DEFINED NUTTX_CHIP_ABS_DIR)
+  list(APPEND HUANGSHAN_DEFS
+    SOC_BF0_HCPU
+    SF32LB52X
+    HAL_TICK_PER_SECOND=1000
+    USE_HAL_DRIVER)
+endif()
+
+nuttx_add_application(
+  NAME    hello_app
+  SRCS    ${SRCS}
+  STACKSIZE ${CONFIG_LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_STACKSIZE}
+  PRIORITY  ${CONFIG_LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_PRIORITY}
+  MODULE   huangshan_running
+  INCLUDE_DIRECTORIES ${HUANGSHAN_INCDIRS}
+  COMPILE_FLAGS "-std=c11;-O2;-Wall;-Wextra"
+  DEFINITIONS ${HUANGSHAN_DEFS}
+)
+
+endif() # CONFIG_LVX_USE_DEMO_CONTEST2026_192_HELLO_APP

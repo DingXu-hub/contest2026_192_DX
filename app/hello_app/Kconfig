@@ -1,10 +1,54 @@
-#
-# For a description of the syntax of this configuration file,
-# see the file kconfig-language.txt in the NuttX tools repository.
-#
+# Huangshan Running - Smartwatch (contest 2026 team 192)
+# Runs on the LCKFB Huangshan Pi (SF32LB52) and the host simulator.
 
-config LVX_USE_DEMO_CONTEST2026_000_HELLO_APP
-	bool "Contest 2026 team 000 hello app"
+config LVX_USE_DEMO_CONTEST2026_192_HELLO_APP
+	bool "Huangshan Running smartwatch"
+	default n
+	depends on ARCH_CHIP_SF32LB52 || ARCH_SIM
+	---help---
+		A complete running smartwatch built from scratch on the
+		SF32LB52 (LCKFB Huangshan Pi):
+		- 6-page UI: watch face / running / route / stats / settings /
+		  compass (keys-only navigation, centre-line action buttons,
+		  no long-press, dark sport theme, slide-in transitions)
+		- IMU (LSM6DS3) step counting, pace, stride-adaptive step length
+		- real-time dead-reckoning track from live IMU (gravity-projected
+		  yaw, turn dead-band, ring-buffer track, live rendering)
+		- MMC5603NJ compass on xioTechnologies/Fusion AHRS (NED 9-axis),
+		  AUTO_SR demagnetisation + saturation rejection + weak-field
+		  gating with gyro fallback & boot anchor, declination (true
+		  north), background offset auto-calibration (3D-gated sphere
+		  fit) and 15 s figure-8 calibration with live coverage bars
+		- ePicasso (EPIC) GPU map rendering, KV-backed history storage,
+		  ALS auto-brightness, temperature, power manager
+		Also builds on the host simulator (ARCH_SIM) for headless
+		development with the software renderer and simulated sensors.
+
+if LVX_USE_DEMO_CONTEST2026_192_HELLO_APP
+
+config LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_PRIORITY
+	int "hello_app task priority"
+	default 100
+
+config LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_STACKSIZE
+	int "hello_app stack size"
+	default 32768
+
+config LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_USE_BT_PAN
+	bool "Bluetooth PAN GPX download"
 	default n
 	---help---
-		Enable the contest 2026 team 000 hello app demo.
+		Enable the BT-PAN client to fetch GPX routes from a phone.
+		A built-in mock transport lets the whole pipeline run without a
+		phone; plug the vendor PAN transport in bt_pan.c for the real
+		link (chip BT driver is not integrated in this build).
+
+config LVX_USE_DEMO_CONTEST2026_192_HELLO_APP_GPU_ACCEL
+	bool "ePicasso GPU acceleration"
+	default y
+	---help---
+		Use the ePicasso (EPIC) 2.5D engine for background fill and the
+		compass-rotation tile composite.  Falls back to software when
+		the HAL is unavailable.
+
+endif # LVX_USE_DEMO_CONTEST2026_192_HELLO_APP
