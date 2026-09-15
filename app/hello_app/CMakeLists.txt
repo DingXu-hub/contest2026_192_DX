@@ -21,6 +21,7 @@ set(SRCS
     src/pages.c
     src/net_link.c
     src/link.c
+    src/mic_audcodec.c
     src/ai_agent.c
     src/ppp_link.c
     src/fusion/FusionAhrs.c

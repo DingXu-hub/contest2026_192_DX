@@ -26,6 +26,7 @@
 
 #include "ai_agent.h"
 #include "link.h"
+#include "mic_audcodec.h"
 #include "pages.h"
 #include "sensor_manager.h"
 #include "run_engine.h"
@@ -156,7 +157,7 @@ static void tool_timer(int minutes)
 }
 
 static const char *g_help =
-    "tools: !start !stop !status !timer N !tip !link !time !http URL !help | ?question";
+    "tools: !start !stop !status !timer N !tip !link !time !http URL !mic .. !help | ?question";
 
 /* ---------------- LLM bridge ---------------- */
 
@@ -221,7 +222,7 @@ static void handle_line(char *line)
     if (line[0] != '?' && line[0] != '!' && line[0] != '@')
     {
         static const char *const bare[] = { "start", "stop", "status",
-                                            "timer", "tip", "link", "time", "http", "help", NULL };
+                                            "timer", "tip", "link", "time", "http", "mic", "help", NULL };
         int i;
 
         for (i = 0; bare[i]; i++)
@@ -320,6 +321,124 @@ static void handle_line(char *line)
                 ai_send("no gateway (start tools/gateway.py)");
                 ai_agent_notify("tool", "no gateway: run tools/gateway.py");
             }
+        }
+        else if (!strncmp(line + 1, "mic", 3))
+        {
+            const char *arg = line + 4;
+            char b[128];
+
+            while (*arg == ' ')
+                arg++;
+
+            /* recording needs the codec clock, which the power manager
+             * gates in IDLE/SLEEP - keep the system awake while we work */
+            if (g_ctx && g_ctx->pm)
+                pm_report_activity(g_ctx->pm);
+
+            if (!strncmp(arg, "stop", 4))
+            {
+                mic_stop();
+                snprintf(b, sizeof(b), "mic stopped");
+            }
+            else if (!strncmp(arg, "stats", 5))
+            {
+                uint32_t n; int32_t peak, rms;
+                mic_stats(&n, &peak, &rms);
+                snprintf(b, sizeof(b), "mic samples=%lu peak=%ld rms=%ld",
+                         (unsigned long)n, (long)peak, (long)rms);
+            }
+            else if (!strncmp(arg, "poll", 4))
+            {
+                if (g_ctx && g_ctx->pm)
+                {
+                    pm_report_activity(g_ctx->pm);
+                    pm_enter_active(g_ctx->pm);
+                }
+                mic_poll_regs(2000);
+                snprintf(b, sizeof(b), "poll done");
+            }
+            else if (!strncmp(arg, "regs", 4))
+            {
+                mic_dump_regs();
+                snprintf(b, sizeof(b), "regs dumped");
+            }
+            else if (!strncmp(arg, "sweep", 5))
+            {
+                /* walk plausible ADC clock configurations and report the
+                 * *effective sample rate* (samples/second) - objective, no
+                 * audio needed, and it finds the working divider */
+                static const struct {
+                    uint8_t src, osr, div, op;
+                } combos[] = {
+                    { 0, 1, 10, 0 }, { 0, 1, 10, 1 }, { 0, 1, 10, 2 },
+                    { 0, 1, 10, 3 }, { 0, 1,  5, 0 }, { 0, 1, 20, 0 },
+                    { 1, 2, 10, 0 }, { 1, 3,  5, 0 }, { 1, 3,  6, 0 },
+                    { 1, 2,  8, 0 }, { 0, 2, 10, 0 }, { 0, 0, 15, 0 },
+                };
+                unsigned i;
+
+                ai_send("@TOOL mic-sweep");
+                for (i = 0; i < sizeof(combos) / sizeof(combos[0]); i++)
+                {
+                    mic_cfg_t cfg;
+                    uint32_t n; int32_t peak, rms;
+                    struct timeval t0, t1;
+                    uint32_t ms;
+
+                    mic_cfg_default(&cfg);
+                    cfg.clk_src_sel = combos[i].src;
+                    cfg.osr_sel     = combos[i].osr;
+                    cfg.clk_div     = combos[i].div;
+                    cfg.opmode      = combos[i].op;
+
+                    if (!mic_start(&cfg))
+                    {
+                        snprintf(b, sizeof(b),
+                                 "cfg src=%u osr=%u div=%u op=%u -> start FAILED",
+                                 combos[i].src, combos[i].osr, combos[i].div,
+                                 combos[i].op);
+                        ai_send(b);
+                        continue;
+                    }
+                    if (g_ctx && g_ctx->pm)
+                        pm_report_activity(g_ctx->pm);
+                    gettimeofday(&t0, NULL);
+                    usleep(700000);
+                    gettimeofday(&t1, NULL);
+                    ms = (uint32_t)((t1.tv_sec - t0.tv_sec) * 1000 +
+                                    (t1.tv_usec - t0.tv_usec) / 1000);
+                    mic_stats(&n, &peak, &rms);
+                    mic_stop();
+                    snprintf(b, sizeof(b),
+                             "src=%u osr=%u div=%u op=%u -> %lu Hz (n=%lu peak=%ld rms=%ld)",
+                             combos[i].src, combos[i].osr, combos[i].div,
+                             combos[i].op,
+                             (unsigned long)(ms ? (n * 1000UL) / ms : 0),
+                             (unsigned long)n, (long)peak, (long)rms);
+                    ai_send(b);
+                }
+                snprintf(b, sizeof(b), "sweep done");
+            }
+            else
+            {
+                if (mic_start(NULL))
+                {
+                    uint32_t n; int32_t peak, rms;
+                    if (g_ctx && g_ctx->pm)
+                        pm_enter_active(g_ctx->pm);
+                    usleep(500000);
+                    mic_stats(&n, &peak, &rms);
+                    snprintf(b, sizeof(b),
+                             "mic up: n=%lu peak=%ld rms=%ld (gain vol=%u)",
+                             (unsigned long)n, (long)peak, (long)rms,
+                             mic_cfg()->rough_vol);
+                }
+                else
+                    snprintf(b, sizeof(b), "mic start failed");
+            }
+            ai_send("@TOOL mic");
+            ai_send(b);
+            ai_agent_notify("mic", b);
         }
         else if (!strncmp(line + 1, "tip", 3))
         {
