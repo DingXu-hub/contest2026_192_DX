@@ -72,6 +72,7 @@ void mic_cfg_default(mic_cfg_t *cfg)
     cfg->diva_clk_adc       = 5;
     cfg->fsp                = 0;
     cfg->rough_vol          = 0xa;
+    cfg->channel            = 0;
 }
 
 mic_cfg_t *mic_cfg(void)
@@ -200,11 +201,15 @@ bool mic_start(const mic_cfg_t *cfg)
     memset(&s_dma, 0, sizeof(s_dma));
 
     s_dma.Instance       = MIC_DMA_INSTANCE;
-    s_dma.Init.Request   = MIC_DMA_REQUEST;
+    /* ADC1 shares the codec DMA controller but uses request 40; the digital
+     * channel decides which of the two analogue front-ends is read */
+    s_dma.Init.Request   = (s_cfg.channel == 1) ? DMA_REQUEST_40
+                                                : MIC_DMA_REQUEST;
     /* SF32LB52X has a single AUDCODEC register block (the _HP/_LP pair only
      * exists on 56x/58x), so only Instance is needed */
     s_codec.Instance     = hwp_audcodec;
-    s_codec.hdma[HAL_AUDCODEC_ADC_CH0] = &s_dma;
+    s_codec.hdma[(s_cfg.channel == 1) ? HAL_AUDCODEC_ADC_CH1
+                                      : HAL_AUDCODEC_ADC_CH0] = &s_dma;
 
     s_codec.Init.samplerate_index = 0;
     s_codec.Init.adc_cfg.opmode   = s_cfg.opmode;
@@ -224,21 +229,23 @@ bool mic_start(const mic_cfg_t *cfg)
      * configuring a channel) */
     HAL_AUDCODEC_Clear_All_Channel(&s_codec, 0x2);
 
-    if (HAL_AUDCODEC_Config_RChanel(&s_codec, 0, &s_codec.Init.adc_cfg) != HAL_OK)
+    if (HAL_AUDCODEC_Config_RChanel(&s_codec, s_cfg.channel,
+                                    &s_codec.Init.adc_cfg) != HAL_OK)
     {
         printf("[Mic] Config_RChanel failed\n");
         return false;
     }
 
     if (HAL_AUDCODEC_Receive_DMA(&s_codec, s_dma_buf, sizeof(s_dma_buf),
-                                 HAL_AUDCODEC_ADC_CH0) != HAL_OK)
+                                 (s_cfg.channel == 1) ? HAL_AUDCODEC_ADC_CH1
+                                                      : HAL_AUDCODEC_ADC_CH0) != HAL_OK)
     {
         printf("[Mic] Receive_DMA failed\n");
         return false;
     }
 
     /* 0 dB ADC path (the HAL's default leaves the volume from the last use) */
-    HAL_AUDCODEC_Config_ADCPath_Volume(&s_codec, 0, 0);
+    HAL_AUDCODEC_Config_ADCPath_Volume(&s_codec, s_cfg.channel, 0);
 
     HAL_NVIC_SetPriority(MIC_DMA_IRQ, 1, 0);
     HAL_NVIC_EnableIRQ(MIC_DMA_IRQ);
@@ -264,7 +271,8 @@ void mic_stop(void)
         return;
 
     __HAL_AUDCODEC_ADC_DISABLE(&s_codec);
-    HAL_AUDCODEC_DMAStop(&s_codec, HAL_AUDCODEC_ADC_CH0);
+    HAL_AUDCODEC_DMAStop(&s_codec, (s_cfg.channel == 1) ? HAL_AUDCODEC_ADC_CH1
+                                                       : HAL_AUDCODEC_ADC_CH0);
     HAL_NVIC_DisableIRQ(MIC_DMA_IRQ);
     HAL_AUDCODEC_Close_Analog_ADCPath();
     HAL_TURN_OFF_PLL();
@@ -313,6 +321,9 @@ void mic_dump_regs(void)
            (unsigned long)hwp_audcodec->ADC_CFG,
            (unsigned long)hwp_audcodec->ADC_CH0_CFG,
            (unsigned long)hwp_audcodec->ADC_CH0_ENTRY);
+    printf("[MicREG] CH1_CFG=%08lx CH1_ENTRY=%08lx\n",
+           (unsigned long)hwp_audcodec->ADC_CH1_CFG,
+           (unsigned long)hwp_audcodec->ADC_CH1_ENTRY);
     printf("[MicREG] PLL2=%08lx PLL3=%08lx STAT=%08lx BG0=%08lx BG1=%08lx BG2=%08lx\n",
            (unsigned long)hwp_audcodec->PLL_CFG2,
            (unsigned long)hwp_audcodec->PLL_CFG3,

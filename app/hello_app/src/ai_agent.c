@@ -348,6 +348,16 @@ static void handle_line(char *line)
                 mic_stop();
                 snprintf(b, sizeof(b), "mic stopped");
             }
+            else if (!strncmp(arg, "ch0", 3) || !strncmp(arg, "ch1", 3))
+            {
+                mic_cfg_t cfg;
+                mic_cfg_default(&cfg);
+                cfg.channel = (arg[2] == '1') ? 1 : 0;
+                if (mic_start(&cfg))
+                    snprintf(b, sizeof(b), "mic up on channel %u", cfg.channel);
+                else
+                    snprintf(b, sizeof(b), "mic ch%u start failed", cfg.channel);
+            }
             else if (!strncmp(arg, "stats", 5))
             {
                 uint32_t n; int32_t peak, rms;

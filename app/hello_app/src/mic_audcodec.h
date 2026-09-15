@@ -33,6 +33,7 @@ typedef struct {
     uint8_t  diva_clk_adc;
     uint8_t  fsp;                /* ADC1_CFG1 FSP                         */
     uint8_t  rough_vol;          /* ADC channel volume (0..0xf)           */
+    uint8_t  channel;            /* digital ADC channel: 0 or 1           */
 } mic_cfg_t;
 
 /* defaults: 16 kHz, codec PLL (49.152 MHz) - see mic_audcodec.c */
