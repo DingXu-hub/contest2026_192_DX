@@ -46,6 +46,7 @@ static AUDCODE_ADC_CLK_CONFIG_TYPE s_adc_clk;
 static mic_cfg_t               s_cfg;
 static volatile bool           s_running;
 static volatile uint32_t       s_half_irqs;
+static void (*s_activity)(void);   /* keep-awake hook (power manager) */
 
 static uint8_t                 s_dma_buf[MIC_DMA_BYTES] __attribute__((aligned(4)));
 static volatile int16_t        s_ring[MIC_RING_SAMPLES];
@@ -76,6 +77,19 @@ void mic_cfg_default(mic_cfg_t *cfg)
 mic_cfg_t *mic_cfg(void)
 {
     return &s_cfg;
+}
+
+/* the app installs a keep-awake callback (the power manager gates the
+ * codec clock in IDLE/SLEEP, so every capture path reports activity) */
+void mic_set_activity_hook(void (*fn)(void))
+{
+    s_activity = fn;
+}
+
+static inline void report_activity(void)
+{
+    if (s_activity)
+        s_activity();
 }
 
 bool mic_running(void)
@@ -116,6 +130,7 @@ void HAL_AUDCODEC_RxHalfCpltCallback(AUDCODEC_HandleTypeDef *hacodec, int cid)
     if (s_running)
         publish(s_dma_buf, MIC_DMA_BYTES / 2);
     s_half_irqs++;
+    report_activity();
 }
 
 void HAL_AUDCODEC_RxCpltCallback(AUDCODEC_HandleTypeDef *hacodec, int cid)
@@ -125,6 +140,7 @@ void HAL_AUDCODEC_RxCpltCallback(AUDCODEC_HandleTypeDef *hacodec, int cid)
     if (s_running)
         publish(s_dma_buf + MIC_DMA_BYTES / 2, MIC_DMA_BYTES / 2);
     s_half_irqs++;
+    report_activity();
 }
 
 /* the DMA channel IRQ (DMAC1_CH4) */
@@ -235,6 +251,7 @@ bool mic_start(const mic_cfg_t *cfg)
     __HAL_AUDCODEC_ADC_ENABLE(&s_codec);
 
     s_running = true;
+    report_activity();
     printf("[Mic] started: rate=%lu src=%u osr=%u div=%u op=%u vol=%u\n",
            (unsigned long)s_cfg.sample_rate, s_cfg.clk_src_sel, s_cfg.osr_sel,
            s_cfg.clk_div, s_cfg.opmode, s_cfg.rough_vol);
@@ -328,6 +345,8 @@ void mic_poll_regs(int rounds)
     for (i = 0; i < rounds; i++)
     {
         uint32_t v = hwp_audcodec->ADC_CH0_ENTRY;
+        if ((i % 100) == 0)
+            report_activity();
         if (v != last)
             changes++;
         last = v;

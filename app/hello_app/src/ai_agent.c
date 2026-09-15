@@ -62,10 +62,18 @@ static void http_card(const char *text)
     ai_agent_notify("http", text);
 }
 
+/* keep-awake: the power manager gates the codec clock in IDLE/SLEEP */
+static void mic_keep_awake(void)
+{
+    if (g_ctx && g_ctx->pm)
+        pm_report_activity(g_ctx->pm);
+}
+
 void ai_agent_init(void)
 {
     memset(&g_ai, 0, sizeof(g_ai));
     link_set_http_sink(http_card);
+    mic_set_activity_hook(mic_keep_awake);
 }
 
 void ai_agent_set_context(void *app_ctx)

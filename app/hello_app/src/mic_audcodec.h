@@ -50,6 +50,9 @@ int  mic_read(int16_t *out, int max_samples);
 void mic_stats_reset(void);
 void mic_stats(uint32_t *samples, int32_t *peak, int32_t *rms);
 
+/* install the keep-awake callback (called from the capture paths) */
+void mic_set_activity_hook(void (*fn)(void));
+
 /* register dump for bring-up debugging */
 void mic_dump_regs(void);
 void mic_poll_regs(int rounds);
