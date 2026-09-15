@@ -17,6 +17,7 @@
  */
 
 #include <nuttx/config.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,7 @@
 #include "route_renderer.h"
 #include "touch_handler.h"
 #include "ai_agent.h"
+#include "link.h"
 #include "app_diag.h"
 #include "devshot.h"
 #include "sensor_manager.h"
@@ -325,6 +327,51 @@ static void on_touch_event(touch_event_t event, void *user_data)
             break;
         }
     }
+}
+
+
+/* ------------------------------------------------------------------ *
+ * console takeover
+ *
+ * /etc/init.d/rcS only does "huangshan_run &", then NSH's interactive
+ * session keeps reading /dev/console and competes for the input bytes -
+ * which is why single commands were randomly swallowed.  Once the app is
+ * up the shell has done its job, so the app suspends it and the framed
+ * link owns the port exclusively.
+ * ------------------------------------------------------------------ */
+
+#include <nuttx/sched.h>
+
+static pid_t g_shell_pid;
+
+static void find_shell(FAR struct tcb_s *tcb, FAR void *arg)
+{
+    (void)arg;
+#if CONFIG_TASK_NAME_SIZE > 0
+    if (tcb->pid == 0 || tcb->pid == getpid())
+        return;
+    if (strncmp(tcb->name, "nsh", 3) == 0 ||
+        strncmp(tcb->name, "/bin/nsh", 8) == 0)
+        g_shell_pid = tcb->pid;
+#endif
+}
+
+static void console_takeover(void)
+{
+    g_shell_pid = 0;
+    nxsched_foreach(find_shell, NULL);
+    if (g_shell_pid > 0)
+    {
+        /* SIGSTOP: the shell stops reading; SIGCONT would bring it back */
+        if (kill(g_shell_pid, SIGSTOP) == 0)
+            printf("[App] console takeover: nsh pid=%d suspended\n",
+                   (int)g_shell_pid);
+        else
+            printf("[App] console takeover: suspend pid=%d failed errno=%d\n",
+                   (int)g_shell_pid, errno);
+    }
+    else
+        printf("[App] console takeover: no shell task found\n");
 }
 
 /* ------------------------------------------------------------------ *
@@ -1027,6 +1074,12 @@ int main(int argc, char *argv[])
     task_create("huangshan_nst", NET_TASK_PRIORITY + 1,
                 NET_TASK_STACKSIZE, net_stat_task, NULL);
 #endif
+    /* the framed link owns /dev/console; every text line it decodes goes
+     * to the AI agent, so the PC gateway can talk in frames while a bare
+     * serial terminal still works with raw lines */
+    console_takeover();
+    link_set_text_sink(ai_agent_feed_line);
+    task_create("huangshan_link", 120, 4096, link_task, NULL);
     task_create("huangshan_ai", 120, 6144, ai_task, NULL);
 
 #if APP_DEMO_SEED

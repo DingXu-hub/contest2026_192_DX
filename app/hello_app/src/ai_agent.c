@@ -25,6 +25,7 @@
 #include <sys/time.h>
 
 #include "ai_agent.h"
+#include "link.h"
 #include "pages.h"
 #include "sensor_manager.h"
 #include "run_engine.h"
@@ -34,7 +35,6 @@
 
 static ai_agent_t g_ai;
 static app_ctx_t *g_ctx;
-static int        g_fd = -1;
 
 static uint32_t now_ms(void)
 {
@@ -45,11 +45,9 @@ static uint32_t now_ms(void)
 
 static void ai_send(const char *s)
 {
-    if (g_fd >= 0)
-    {
-        write(g_fd, s, strlen(s));
-        write(g_fd, "\n", 1);
-    }
+    /* framed text when a PC gateway is listening, raw line otherwise;
+     * the console fd itself is owned by link.c */
+    link_send_text(s);
 }
 
 ai_agent_t *ai_agent_get(void)
@@ -57,9 +55,16 @@ ai_agent_t *ai_agent_get(void)
     return &g_ai;
 }
 
+/* HTTP proxy replies (from the PC gateway) surface as a UI card */
+static void http_card(const char *text)
+{
+    ai_agent_notify("http", text);
+}
+
 void ai_agent_init(void)
 {
     memset(&g_ai, 0, sizeof(g_ai));
+    link_set_http_sink(http_card);
 }
 
 void ai_agent_set_context(void *app_ctx)
@@ -151,7 +156,7 @@ static void tool_timer(int minutes)
 }
 
 static const char *g_help =
-    "tools: !start !stop !status !timer N !tip !help | ?question";
+    "tools: !start !stop !status !timer N !tip !link !time !http URL !help | ?question";
 
 /* ---------------- LLM bridge ---------------- */
 
@@ -198,6 +203,15 @@ static void proactive_check(void)
 
 /* ---------------- command dispatch ---------------- */
 
+static void handle_line(char *line);
+
+void ai_agent_feed_line(const char *line_in)
+{
+    char line[AI_LINE_MAX];
+    strlcpy(line, line_in, sizeof(line));
+    handle_line(line);
+}
+
 static void handle_line(char *line)
 {
     /* Tolerate a missing command prefix: the console UART can drop the
@@ -207,7 +221,7 @@ static void handle_line(char *line)
     if (line[0] != '?' && line[0] != '!' && line[0] != '@')
     {
         static const char *const bare[] = { "start", "stop", "status",
-                                            "timer", "tip", "help", NULL };
+                                            "timer", "tip", "link", "time", "http", "help", NULL };
         int i;
 
         for (i = 0; bare[i]; i++)
@@ -248,6 +262,53 @@ static void handle_line(char *line)
             tool_status();
         else if (!strncmp(line + 1, "timer", 5))
             tool_timer(atoi(line + 7));
+        else if (!strncmp(line + 1, "link", 4))
+        {
+            link_print_stats();
+            {
+                char b[96];
+                snprintf(b, sizeof(b), "link: gateway=%s",
+                         link_gateway_present() ? "present" : "absent");
+                ai_agent_notify("tool", b);
+                ai_send("@TOOL link");
+                ai_send(b);
+            }
+        }
+        else if (!strncmp(line + 1, "time", 4))
+        {
+            struct timeval tv;
+            char b[96];
+            gettimeofday(&tv, NULL);
+            snprintf(b, sizeof(b), "clock=%lu (link %s)", (unsigned long)tv.tv_sec,
+                     link_gateway_present() ? "up" : "down");
+            ai_send("@TOOL time");
+            ai_send(b);
+            ai_agent_notify("tool", b);
+            link_send_ctrl(LINK_C_PING, NULL, 0);   /* also probe the gateway */
+        }
+        else if (!strncmp(line + 1, "http", 4))
+        {
+            const char *url = line + 6;
+            while (*url == ' ')
+                url++;
+            if (*url == ' ')
+            {
+                ai_send("@TOOL http");
+                ai_send("usage: !http <url>");
+            }
+            else if (link_http_get(url) == 0)
+            {
+                ai_send("@TOOL http");
+                ai_send("requested");
+                ai_agent_notify("tool", "fetching URL via PC gateway...");
+            }
+            else
+            {
+                ai_send("@TOOL http");
+                ai_send("no gateway (start tools/gateway.py)");
+                ai_agent_notify("tool", "no gateway: run tools/gateway.py");
+            }
+        }
         else if (!strncmp(line + 1, "tip", 3))
         {
             llm_ask("Give ONE short (max 60 chars) running-form tip.");
@@ -274,69 +335,29 @@ static void handle_line(char *line)
 
 /* ---------------- task ---------------- */
 
+/* period work, driven by the link task every poll cycle */
+void ai_agent_tick(void)
+{
+    if (g_ai.active && now_ms() > g_ai.notify_until_ms)
+    {
+        g_ai.active = false;
+        if (g_ctx)
+            g_ctx->ui.dirty = true;
+    }
+
+    proactive_check();
+}
+
+/* legacy entry point kept for compatibility: now only initialises and
+ * announces readiness - the console is owned by link.c */
 void ai_agent_task(void)
 {
-    char line[AI_LINE_MAX];
-    size_t len = 0;
-
     ai_agent_init();
-
-    g_fd = open("/dev/console", O_RDWR | O_NONBLOCK);
-    if (g_fd < 0)
-    {
-        printf("[AI] open /dev/console failed\n");
-        return;
-    }
     ai_send("@AI agent-ready: type ?question or !help");
 
     for (;;)
     {
-        struct pollfd pfd;
-        pfd.fd = g_fd;
-        pfd.events = POLLIN;
-        pfd.revents = 0;
-
-        /* NOTE: poll-gated read.  The console driver does NOT honour
-         * O_NONBLOCK (an unconditional read() blocks the whole agent
-         * task), so only drain after poll reported POLLIN - and drain
-         * completely, anything left unread delays the next byte. */
-        if (poll(&pfd, 1, 200) > 0 && (pfd.revents & POLLIN))
-        {
-            for (;;)
-            {
-                char buf[128];
-                int n = read(g_fd, buf, sizeof(buf));
-                int i;
-
-                if (n <= 0)
-                    break;
-
-                for (i = 0; i < n; i++)
-                {
-                    char c = buf[i];
-
-                    if (c == '\n' || c == '\r')
-                    {
-                        if (len)
-                        {
-                            line[len] = '\0';
-                            handle_line(line);
-                            len = 0;
-                        }
-                    }
-                    else if (len < AI_LINE_MAX - 1)
-                        line[len++] = c;
-                }
-            }
-        }
-
-        if (g_ai.active && now_ms() > g_ai.notify_until_ms)
-        {
-            g_ai.active = false;
-            if (g_ctx)
-                g_ctx->ui.dirty = true;
-        }
-
-        proactive_check();
+        usleep(200000);
+        ai_agent_tick();
     }
 }

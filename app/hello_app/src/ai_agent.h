@@ -41,6 +41,9 @@ typedef struct {
 } ai_agent_t;
 
 void  ai_agent_init(void);
+void  ai_agent_task(void);            /* init + announce + tick loop */
+void  ai_agent_tick(void);            /* notify timeout + proactive engine */
+void  ai_agent_feed_line(const char *line);   /* one command line from link.c */
 void  ai_agent_set_context(void *app_ctx);
 void  ai_agent_task(void);
 void  ai_agent_notify(const char *src, const char *text);
