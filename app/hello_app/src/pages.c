@@ -20,6 +20,7 @@
 #include "pages.h"
 #include "kv_store.h"
 #include "ai_agent.h"
+#include "link.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -334,12 +335,16 @@ static void page_watch_render(app_ctx_t *ctx, uint32_t now_ms)
     float frac;
     const int goal = 8000;
 
-    /* The board has no RTC: after a cold boot the clock reads 1970.  For
-     * demo purposes nudge it onto a fixed "today" once (this only shifts
-     * the display; it does not set the system clock). */
-    if (demo_off == 0)
-        demo_off = 1782907200 - t;      /* 2026-07-01 12:00 UTC */
-    t += demo_off;
+    /* The board has no RTC, so a cold boot without the PC gateway reads
+     * 1970.  The gateway syncs the real time over the link (link.c
+     * SET_TIME); when that has happened show the true date/time, and only
+     * fall back to a fixed demo date while the clock is still unset. */
+    if (t < 1577836800)                 /* before 2020-01-01 => unset */
+    {
+        if (demo_off == 0)
+            demo_off = 1782907200 - t;  /* 2026-07-01 12:00 UTC */
+        t += demo_off;
+    }
     tm = localtime(&t);
 
     clear_screen(rs, UI_BG);
@@ -366,6 +371,16 @@ static void page_watch_render(app_ctx_t *ctx, uint32_t now_ms)
 
     snprintf(buf, sizeof(buf), "%d%% OF GOAL", (int)(frac * 100.0f + 0.5f));
     label_center(rs->cbuf, rs->buf_width, 192, buf, UI_TEXT_FAINT);
+
+    /* link indicator, kept on the centre line inside the arc (the four
+     * rounded corners stay empty): cyan = PC gateway connected (clock
+     * synced / internet reachable), faint = offline */
+    {
+        bool up = link_gateway_present();
+        label_center(rs->cbuf, rs->buf_width, 214,
+                     up ? "NET OK" : "NET --",
+                     up ? UI_ACC_CYAN : UI_TEXT_FAINT);
+    }
 
     /* today's activity: one card with three metric columns */
     {
