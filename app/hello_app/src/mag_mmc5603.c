@@ -14,6 +14,7 @@
 
 #include "mag_mmc5603.h"
 #include "kv_store.h"
+#include "app_diag.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -39,10 +40,20 @@
 #define CTRL0_AUTO_SR   0x20   /* auto SET/RESET before each measure */
 #define CTRL0_CMM_FREQ  0x80
 
+/* STATUS1 (0x18), MMC5603NJ datasheet Rev.B p.8:
+ *   bit7 Meas_t_done, bit6 Meas_m_done, bit5 Sat_sensor, bit4 OTP_read_done,
+ *   bit3 ST_Fail, bits2..0 factory/internal.
+ * NOTE bit5 is NOT a field-saturation flag: the datasheet defines it as the
+ * self-test indicator that "keeps low once the device PASS self-test", and
+ * real saturation is checked by driving the self-test coil (CTRL1 St_enp/
+ * St_enm).  The old code dropped every sample while this bit was high. */
 #define STATUS_MAG_READY  0x40   /* bit6: measurement data ready */
 #define STATUS_TEMP_READY 0x80   /* bit7 */
-#define STATUS_SATURATED  0x20   /* bit5: sensor saturated (strong field) */
+#define STATUS_SAT_SENSOR 0x20   /* bit5: self-test signal (low = passed) */
 #define STATUS_OTP_DONE   0x10   /* bit4: OTP load done */
+
+/* CTRL1 (0x1C) bits */
+#define CTRL1_SW_RST      0x80
 
 /* historical aliases used at init (SET/RESET pulses) */
 #define CTRL0_SET    CTRL0_DO_SET
@@ -54,18 +65,30 @@
  * calibration that survives reboots is baked into the binary here.
  *
  * SINGLE SOURCE OF TRUTH: this is the only definition of
- * MAG_CAL_DEFAULT_* (the stale copies in mag_mmc5603.h were removed so a
- * hidden macro redefinition cannot shadow these).  Values below come from
- * the 2026-08-22 on-device figure-8 run; update them after a fresh
- * calibration and reflash.  After a good 3D tumble also backfill the
- * resulting scale factors here (they are currently 1.0, i.e. per-axis
- * sensitivity differences are uncorrected until then). */
-#define MAG_CAL_DEFAULT_OX (-3048.0f)
-#define MAG_CAL_DEFAULT_OY 3101.0f
-#define MAG_CAL_DEFAULT_OZ (-9498.0f)
-#define MAG_CAL_DEFAULT_SX 1.0f
-#define MAG_CAL_DEFAULT_SY 1.0f
-#define MAG_CAL_DEFAULT_SZ 1.0f
+ * MAG_CAL_DEFAULT_*.
+ *
+ * 2026-09-15 re-derivation: the previous values were hand-tuned so that
+ * mz ~= 0 while the watch lay flat, i.e. the Z offset was made to absorb
+ * the Earth's *vertical* field (the header comment even noted "-44 deg
+ * error at 41 deg tilt").  That is physically wrong - a hard-iron offset
+ * is a fixed sensor/PCB bias, so subtracting the local vertical field
+ * leaves a magnetic vector with no vertical component and therefore a
+ * heading error that grows with tilt, and a |B| that changes with
+ * orientation (measured 4.5..83 uT with the old values, and Fusion's
+ * magnetic error pinned at 90 deg).
+ *
+ * The values below are the least-squares sphere centre of a 109-sample
+ * 3D tumble captured on this unit (raw counts):
+ *      centre = (-4169, +1447, -5135)  radius = 7594 counts = 47.5 uT
+ * The fitted radius equals the local geomagnetic total field (~47-48 uT
+ * at 31 deg N), which is the physical self-check that the fit is right.
+ * Per-axis half-spans 6803/6368/7244 give the soft-iron scales. */
+#define MAG_CAL_DEFAULT_OX (-4169.0f)
+#define MAG_CAL_DEFAULT_OY 1447.0f
+#define MAG_CAL_DEFAULT_OZ (-5135.0f)
+#define MAG_CAL_DEFAULT_SX 1.000f
+#define MAG_CAL_DEFAULT_SY 1.069f
+#define MAG_CAL_DEFAULT_SZ 0.939f
 
 static uint32_t get_time_ms(void)
 {
@@ -155,30 +178,25 @@ int mag_mmc5603_init(mag_mmc5603_t *mag, const char *i2c_dev)
         return -1;
     }
 
-    /* Adafruit sequence: SW_RST -> SET/RESET -> one-shot mode */
-    i2c_write_reg(mag->fd, addr, REG_CTRL1, 0x80);   /* SW_RST (auto-clear) */
-    usleep(20000);
-    i2c_write_reg(mag->fd, addr, REG_CTRL0, CTRL0_SET);    /* SET pulse */
+    /* Adafruit/MMC5603NJ sequence: SW_RST -> SET/RESET pulse -> one-shot
+     * (CTRL0/CTRL2 = 0).  Cmm_freq_en (0x80) is only for continuous mode,
+     * so it is not written here; the SET/RESET pulses at reset are what
+     * clear the AMR bridge offset before the first on-demand measurement. */
+    i2c_write_reg(mag->fd, addr, REG_CTRL1, CTRL1_SW_RST);  /* auto-clears */
+    usleep(20000);                     /* datasheet: power-on time 20 ms */
+    i2c_write_reg(mag->fd, addr, REG_CTRL0, CTRL0_SET);     /* SET pulse */
     usleep(2000);
-    i2c_write_reg(mag->fd, addr, REG_CTRL0, CTRL0_RESET);  /* RESET pulse */
+    i2c_write_reg(mag->fd, addr, REG_CTRL0, CTRL0_RESET);   /* RESET pulse */
     usleep(2000);
-    i2c_write_reg(mag->fd, addr, REG_CTRL0, CTRL0_CMM_FREQ); /* one-shot */
-    i2c_write_reg(mag->fd, addr, REG_CTRL2, 0x00);   /* no CMM */
+    i2c_write_reg(mag->fd, addr, REG_CTRL0, 0x00);          /* one-shot */
+    i2c_write_reg(mag->fd, addr, REG_CTRL2, 0x00);          /* no CMM */
 
     mag->scale_x = mag->scale_y = mag->scale_z = 1.0f;
     mag->otp_comp[0] = mag->otp_comp[1] = mag->otp_comp[2] = 1.0f;
 
-    /* compile-time default calibration (raw counts, from an on-device
-     * figure-8 run): the board has no persistent FS (data is tmpfs and
-     * runtime NOR writes hard-fault on this XIP build), so the
-     * calibration that matters is baked in here.  A session KV copy can
-     * still override it until the next reboot.
-     *   2026-08-19 runs: off=(-2443, 2529, -11087/…), scale=(1,1,1)
-     *   X/Y are reliable (flat-figure-8).  The Z offset used to absorb
-     *   the Earth's vertical field (mz ~= 0 at level) which corrupted the
-     *   tilt-compensated heading at tilt (measured -44 deg error at 41
-     *   deg tilt).  Re-derived from the level raw Z and the local field
-     *   (~41 uT vertical): OZ = -4500 -> mz ~= +41 uT into the screen. */
+    /* compile-time default calibration (raw counts) - see the derivation
+     * note next to MAG_CAL_DEFAULT_* above.  A session KV copy can still
+     * override it until the next reboot. */
     mag->offset_x = MAG_CAL_DEFAULT_OX;
     mag->offset_y = MAG_CAL_DEFAULT_OY;
     mag->offset_z = MAG_CAL_DEFAULT_OZ;
@@ -219,7 +237,6 @@ int mag_mmc5603_read(mag_mmc5603_t *mag)
     int32_t x, y, z;
     int tries;
     float m_norm;
-    static uint32_t last_sat_log_ms;
 
     if (!mag->present || mag->fd < 0)
         return -1;
@@ -241,18 +258,20 @@ int mag_mmc5603_read(mag_mmc5603_t *mag)
     if (!(st & STATUS_MAG_READY))
         return -1;
 
-    /* saturation flag (bit5): the sensor is being overpowered by a strong
-     * field (hand magnet / motor).  The reading is unreliable - drop the
-     * sample instead of feeding a wrong direction into the fusion. */
-    if (st & STATUS_SATURATED)
+    /* self-test indicator (datasheet: bit5 "keeps low once the device
+     * PASS self-test").  It is NOT a field-saturation flag and must not
+     * gate the measurement - real saturation is checked by driving the
+     * self-test coil via CTRL1 St_enp/St_enm.  Log it (rate limited) and
+     * keep the sample. */
+    if (st & STATUS_SAT_SENSOR)
     {
-        mag->healthy = false;
-        if (get_time_ms() - last_sat_log_ms > 5000)
+        static uint32_t last_st_log_ms;
+        uint32_t tnow = get_time_ms();
+        if (tnow - last_st_log_ms > 5000)
         {
-            last_sat_log_ms = get_time_ms();
-            printf("[Mag] saturated sample dropped\n");
+            last_st_log_ms = tnow;
+            printf("[Mag] STATUS1 self-test flag high (st=0x%02x)\n", st);
         }
-        return -1;
     }
 
     /* 20-bit data, 9 bytes at 0x00 */
@@ -293,8 +312,31 @@ int mag_mmc5603_read(mag_mmc5603_t *mag)
         m_norm = sqrtf(mag->x_g * mag->x_g +
                        mag->y_g * mag->y_g +
                        mag->z_g * mag->z_g);
-        mag->healthy = (m_norm > 10.0f && m_norm < 200.0f);
+        /* Earth's total field is 25..65 uT everywhere on the planet; with
+         * a correct hard-iron calibration |B| is orientation-invariant,
+         * so a wide window still catches gross calibration errors. */
+        mag->healthy = (m_norm > 20.0f && m_norm < 80.0f);
     }
+
+#if APP_DIAG_VERBOSE
+    /* Raw-frame diagnostic: STATUS1 byte (bit5 = Sat_sensor self-test flag,
+     * bit6 = Meas_m_done, bit4 = OTP_read_done), raw 20-bit counts and the
+     * calibrated uT vector - lets the gating/calibration be judged from a
+     * plain serial log. */
+    {
+        static uint32_t last_ms;
+        uint32_t t = get_time_ms();
+        if (t - last_ms >= 500)
+        {
+            last_ms = t;
+            printf("[MagS] st=0x%02x raw=(%ld,%ld,%ld) uT=(%.1f,%.1f,%.1f) "
+                   "|B|=%.1f ok=%d\n",
+                   st, (long)x, (long)y, (long)z,
+                   mag->x_g, mag->y_g, mag->z_g, m_norm,
+                   (int)mag->healthy);
+        }
+    }
+#endif
 
     return 0;
 }
@@ -305,8 +347,47 @@ void mag_mmc5603_start_calib(mag_mmc5603_t *mag, uint32_t duration_ms)
     mag->calib_end_ms = get_time_ms() + duration_ms;
     mag->calib_min_x = mag->calib_min_y = mag->calib_min_z = 0x7FFFFFFF;
     mag->calib_max_x = mag->calib_max_y = mag->calib_max_z = -0x7FFFFFFF;
-    printf("[Mag] Calibrating for %ums (rotate the watch)...\n",
+    memset(mag->fit_ata, 0, sizeof(mag->fit_ata));
+    memset(mag->fit_atb, 0, sizeof(mag->fit_atb));
+    mag->fit_n = 0;
+    printf("[Mag] Calibrating for %ums (tumble the watch in 3D)...\n",
            (unsigned)duration_ms);
+}
+
+/* Solve the 4x4 normal equations in place (Gauss-Jordan with partial
+ * pivoting).  Returns false if the system is singular (poor coverage). */
+static bool solve4(double m[4][5], double out[4])
+{
+    int i, j, k;
+
+    for (i = 0; i < 4; i++)
+    {
+        int piv = i;
+        for (k = i + 1; k < 4; k++)
+            if (fabs(m[k][i]) > fabs(m[piv][i]))
+                piv = k;
+        if (fabs(m[piv][i]) < 1e-9)
+            return false;
+        if (piv != i)
+            for (j = 0; j < 5; j++)
+            {
+                double t = m[i][j];
+                m[i][j] = m[piv][j];
+                m[piv][j] = t;
+            }
+        for (k = 0; k < 4; k++)
+        {
+            double f;
+            if (k == i)
+                continue;
+            f = m[k][i] / m[i][i];
+            for (j = i; j < 5; j++)
+                m[k][j] -= f * m[i][j];
+        }
+    }
+    for (i = 0; i < 4; i++)
+        out[i] = m[i][4] / m[i][i];
+    return true;
 }
 
 void mag_mmc5603_calib_step(mag_mmc5603_t *mag)
@@ -316,32 +397,101 @@ void mag_mmc5603_calib_step(mag_mmc5603_t *mag)
     if (!mag->calib_running)
         return;
 
-    if (get_time_ms() >= mag->calib_end_ms)
+    if (mag->calib_end_ms != 0 && get_time_ms() >= mag->calib_end_ms)
     {
         float rx = (float)(mag->calib_max_x - mag->calib_min_x);
         float ry = (float)(mag->calib_max_y - mag->calib_min_y);
         float rz = (float)(mag->calib_max_z - mag->calib_min_z);
+        double a[4][5];
+        double sol[4];
+        float cx, cy, cz, radius_uT;
+        int i;
 
         /* Coverage check: a real 3D calibration must sweep X, Y and Z by
-         * at least ~2000 counts (~12 uT) each.  A flat-only figure-8
-         * leaves Z un-illuminated, producing a garbage Z offset (it
-         * absorbs the Earth's vertical field, which corrupts the
-         * tilt-compensated heading at tilt) and a Z divide-by-zero
-         * (=> NaN => permanently "unhealthy"); reject the run and keep
-         * the previous calibration.  Tell the user to tumble the watch
-         * through ALL orientations (draw big circles in the air). */
-        if (rx < 2000.0f || ry < 2000.0f || rz < 2000.0f)
+         * at least ~2000 counts (~12 uT) each.  A flat figure-8 leaves Z
+         * un-illuminated, so the fitted centre would absorb the Earth's
+         * vertical field and corrupt the tilt-compensated heading. */
+        if (rx < 2000.0f || ry < 2000.0f || rz < 2000.0f || mag->fit_n < 80)
         {
-            printf("[Mag] Calibration rejected (x %.0f, y %.0f, z %.0f); "
+            printf("[Mag] Calibration rejected (x %.0f, y %.0f, z %.0f, n %u); "
                    "rotate the watch in 3D (tumble it) and retry, "
-                   "keeping previous cal\n", rx, ry, rz);
+                   "keeping previous cal\n",
+                   rx, ry, rz, (unsigned)mag->fit_n);
             mag->calib_running = false;
             return;
         }
 
-        mag->offset_x = (float)(mag->calib_min_x + mag->calib_max_x) / 2.0f;
-        mag->offset_y = (float)(mag->calib_min_y + mag->calib_max_y) / 2.0f;
-        mag->offset_z = (float)(mag->calib_min_z + mag->calib_max_z) / 2.0f;
+        for (i = 0; i < 4; i++)
+        {
+            int j;
+            for (j = 0; j < 4; j++)
+                a[i][j] = mag->fit_ata[i][j];
+            a[i][4] = mag->fit_atb[i];
+        }
+        if (!solve4(a, sol))
+        {
+            printf("[Mag] Calibration fit singular; keeping previous cal\n");
+            mag->calib_running = false;
+            return;
+        }
+
+        cx = (float)sol[0];
+        cy = (float)sol[1];
+        cz = (float)sol[2];
+        radius_uT = (float)sqrt(sol[3] + sol[0] * sol[0] +
+                                sol[1] * sol[1] + sol[2] * sol[2]) *
+                    0.00625f;
+
+        /* Physical self-check: the fitted sphere radius IS the local
+         * geomagnetic total field, which is 25..65 uT anywhere on Earth.
+         * Anything else means the tumble was near a magnet/motor, was not
+         * a real rotation, or the data was corrupted. */
+        if (radius_uT < 25.0f || radius_uT > 65.0f)
+        {
+            printf("[Mag] Calibration rejected: fitted |B| = %.1f uT "
+                   "(expected 25..65 uT); keep away from metal and retry\n",
+                   radius_uT);
+            mag->calib_running = false;
+            return;
+        }
+
+        /* Fit-quality gate: the RMS distance of the samples from the
+         * fitted centre must match the fitted radius.  A tumble that
+         * passed near metal biases the centre and shows up here (e.g. a
+         * 9 uT-biased fit fitted 41 uT where the true field is 47 uT). */
+        {
+            double n = (double)mag->fit_n;
+            double mx = mag->fit_ata[0][3] / 2.0 / n;   /* mean x */
+            double my = mag->fit_ata[1][3] / 2.0 / n;
+            double mz = mag->fit_ata[2][3] / 2.0 / n;
+            double mean_sq = mag->fit_atb[3] / n;       /* mean |v|^2 */
+            double rms_sq = mean_sq - 2.0 * (sol[0] * mx + sol[1] * my +
+                                             sol[2] * mz) +
+                            (sol[0] * sol[0] + sol[1] * sol[1] +
+                             sol[2] * sol[2]);
+            double r_fit_sq = sol[3] + sol[0] * sol[0] + sol[1] * sol[1] +
+                              sol[2] * sol[2];
+            double rms_uT = sqrt(rms_sq) * 0.00625;
+            double dev = (rms_uT - radius_uT) / radius_uT;
+
+            if (dev < 0.0)
+                dev = -dev;
+            if (dev > 0.08)
+            {
+                printf("[Mag] Calibration rejected: RMS radius %.1f uT vs "
+                       "fitted %.1f uT (%.0f%% deviation) - tumble away "
+                       "from metal/desk and retry\n",
+                       rms_uT, radius_uT, dev * 100.0);
+                mag->calib_running = false;
+                return;
+            }
+            printf("[Mag] fit quality: RMS %.1f uT vs radius %.1f uT "
+                   "(%.1f%% dev)\n", rms_uT, radius_uT, dev * 100.0);
+        }
+
+        mag->offset_x = cx;
+        mag->offset_y = cy;
+        mag->offset_z = cz;
 
         avg_range = (rx + ry + rz) / 3.0f;
         mag->scale_x = rx > 0.0f ? avg_range / rx : 1.0f;
@@ -349,9 +499,11 @@ void mag_mmc5603_calib_step(mag_mmc5603_t *mag)
         mag->scale_z = rz > 0.0f ? avg_range / rz : 1.0f;
         mag->calibrated = true;
         mag->calib_running = false;
-        printf("[Mag] Calibrated off=(%.0f,%.0f,%.0f) scale=(%.2f,%.2f,%.2f)\n",
+        printf("[Mag] Calibrated (LSQ sphere) off=(%.0f,%.0f,%.0f) "
+               "scale=(%.3f,%.3f,%.3f) |B|=%.1f uT n=%u\n",
                mag->offset_x, mag->offset_y, mag->offset_z,
-               mag->scale_x, mag->scale_y, mag->scale_z);
+               mag->scale_x, mag->scale_y, mag->scale_z,
+               radius_uT, (unsigned)mag->fit_n);
         /* session persistence (tmpfs only): the compiled-in defaults are
          * the only values that survive a reboot, so the KV copy exists
          * just to carry a fresh calibration to the running boot */
@@ -366,12 +518,33 @@ void mag_mmc5603_calib_step(mag_mmc5603_t *mag)
 
     if (mag_mmc5603_read(mag) == 0)
     {
+        double x = (double)mag->x_raw;
+        double y = (double)mag->y_raw;
+        double z = (double)mag->z_raw;
+        double row[4];
+        double t = x * x + y * y + z * z;
+        int i, j;
+
         if (mag->x_raw < mag->calib_min_x) mag->calib_min_x = mag->x_raw;
         if (mag->x_raw > mag->calib_max_x) mag->calib_max_x = mag->x_raw;
         if (mag->y_raw < mag->calib_min_y) mag->calib_min_y = mag->y_raw;
         if (mag->y_raw > mag->calib_max_y) mag->calib_max_y = mag->y_raw;
         if (mag->z_raw < mag->calib_min_z) mag->calib_min_z = mag->z_raw;
         if (mag->z_raw > mag->calib_max_z) mag->calib_max_z = mag->z_raw;
+
+        /* accumulate the normal equations for x^2+y^2+z^2 = 2a x + 2b y
+         * + 2c z + d  (centre = (a,b,c), radius^2 = d + a^2+b^2+c^2) */
+        row[0] = 2.0 * x;
+        row[1] = 2.0 * y;
+        row[2] = 2.0 * z;
+        row[3] = 1.0;
+        for (i = 0; i < 4; i++)
+        {
+            for (j = 0; j < 4; j++)
+                mag->fit_ata[i][j] += row[i] * row[j];
+            mag->fit_atb[i] += row[i] * t;
+        }
+        mag->fit_n++;
     }
 }
 

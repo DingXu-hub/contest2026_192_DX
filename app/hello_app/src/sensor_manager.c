@@ -914,19 +914,26 @@ void sensor_update(sensor_manager_t *mgr)
 
             if (in_boot)
                 mag_suspect = false;
-            else if (mnorm < 12.0f || mnorm > 130.0f)
+            else if (mnorm < 20.0f || mnorm > 80.0f)
                 mag_suspect = true;
-            else if (mnorm > 18.0f)
+            else if (mnorm > 28.0f && mnorm < 65.0f)
                 mag_suspect = false;
 
-            /* Feed decision.  In the boot window we anchor the heading on
-             * the magnetometer even when the field is weak (as long as it
-             * is not extreme) - this makes the "gyro only" fallback start
-             * from a REAL magnetic heading instead of an arbitrary 0 deg.
-             * Afterwards the mag must be both sane and not suspect. */
+            /* Feed decision: |B| is a scalar invariant, so with a correct
+             * hard-iron calibration it stays inside the Earth's 25..65 uT
+             * window however the watch is held (the 2026-09-15 sphere-fit
+             * calibration reads 47.5 uT = the local geomagnetic total
+             * field).  The old 12/130 uT bands were wide enough to accept
+             * the corrupted 112 uT data that a wrong Z offset produced
+             * while still flapping on valid samples.  These bands only
+             * catch gross errors - ambient field *disturbances* are what
+             * Fusion's magnetic rejection is for.  During the boot window
+             * we anchor the heading on the magnetometer so the gyro-only
+             * fallback starts from a real heading, but only while the
+             * magnitude is physically plausible. */
             bool feed_mag = in_boot
-                                ? (mgr->mag.present && mnorm > 4.0f &&
-                                   mnorm < 200.0f)
+                                ? (mgr->mag.present && mnorm > 20.0f &&
+                                   mnorm < 80.0f)
                                 : (mgr->mag_healthy && !mag_suspect);
 
             if (feed_mag)

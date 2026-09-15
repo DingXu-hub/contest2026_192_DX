@@ -33,10 +33,18 @@ typedef struct {
     int32_t  calib_min_x, calib_max_x;
     int32_t  calib_min_y, calib_max_y;
     int32_t  calib_min_z, calib_max_z;
-    /* soft-iron calibration (min/max based) */
+    /* soft-iron calibration (sphere/ellipsoid fit) */
     float    offset_x, offset_y, offset_z;
     float    scale_x, scale_y, scale_z;
     bool     calibrated;
+
+    /* least-squares sphere fit for the 3D tumble calibration: the normal
+     * equations are accumulated per sample (A^T A, A^T b with the row
+     * [2x 2y 2z 1] and target x^2+y^2+z^2) and solved once at the end.
+     * double is required: the sums reach ~1e12 counts^2. */
+    double   fit_ata[4][4];
+    double   fit_atb[4];
+    uint32_t fit_n;
 } mag_mmc5603_t;
 
 /* init: open the I2C bus, probe the chip, issue SET for a clean start.
