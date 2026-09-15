@@ -266,9 +266,37 @@ static void handle_frame(uint8_t type, uint8_t ch, uint8_t seq,
                             ((uint32_t)pl[3] << 8) | pl[4];
                 tv.tv_usec = ((uint32_t)pl[5] << 24) | ((uint32_t)pl[6] << 16) |
                              ((uint32_t)pl[7] << 8) | pl[8];
+
+                /* optional timezone: the PC sends its UTC offset in minutes
+                 * (e.g. +480 for UTC+8).  Without it the RTC-free watch
+                 * would display UTC.  POSIX TZ wants the offset with the
+                 * opposite sign ("CST-8" == UTC+8). */
+                if (len >= 11)
+                {
+                    int16_t off = (int16_t)(((uint16_t)pl[9] << 8) | pl[10]);
+                    char tz[16];
+                    int hh = off / 60;
+                    int mm = off % 60;
+                    int sign = (hh < 0 || mm < 0) ? -1 : 1;
+                    int ah = hh < 0 ? -hh : hh;
+                    int am = mm < 0 ? -mm : mm;
+
+                    snprintf(tz, sizeof(tz), "UTC%s%d:%02d",
+                             sign > 0 ? "-" : "+", ah, am);
+                    setenv("TZ", tz, 1);
+                    tzset();
+                }
+
                 if (settimeofday(&tv, NULL) == 0)
-                    printf("[Link] clock set to %lu\n",
-                           (unsigned long)tv.tv_sec);
+                {
+                    time_t lt = tv.tv_sec;
+                    struct tm tmv;
+                    char buf[32];
+                    localtime_r(&lt, &tmv);
+                    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
+                    printf("[Link] clock set to %s (tz=%s)\n", buf,
+                           getenv("TZ") ? getenv("TZ") : "(unset)");
+                }
                 else
                     printf("[Link] settimeofday failed errno=%d\n", errno);
                 if (g_up)

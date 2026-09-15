@@ -49,7 +49,9 @@
 /* control sub-commands (CH_CTRL payload[0]) */
 #define LINK_C_PING     0x01   /* reply: PONG + uptime ms                     */
 #define LINK_C_PONG     0x82
-#define LINK_C_SET_TIME 0x02   /* payload: be32 seconds + be32 microseconds   */
+#define LINK_C_SET_TIME 0x02   /* payload: be32 sec + be32 usec + be16 tz minutes
+                                 * (11 bytes; a 9-byte legacy payload means
+                                 *  "no timezone known") */
 #define LINK_C_TIME_ACK 0x83
 #define LINK_C_INFO     0x03   /* reply: PONG-like status string              */
 #define LINK_C_WHOAMI   0x04   /* gateway -> device hello                     */

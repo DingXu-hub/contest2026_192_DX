@@ -22,6 +22,7 @@ Type plain lines on stdin to send a framed text command to the watch.
 
 import argparse
 import binascii
+import datetime
 import queue
 import re
 import sys
@@ -285,11 +286,18 @@ class Gateway:
         if self.set_time:
             time.sleep(0.8)
             now = time.time()
-            payload = bytes([C_SET_TIME]) + \
-                int(now).to_bytes(4, 'big') + \
-                int((now % 1) * 1e6).to_bytes(4, 'big')
+            # local UTC offset in minutes (+480 for UTC+8): without it the
+            # RTC-less watch would display UTC on its face
+            off = int(datetime.datetime.now().astimezone()
+                      .utcoffset().total_seconds() // 60)
+            payload = (bytes([C_SET_TIME]) +
+                       int(now).to_bytes(4, 'big') +
+                       int((now % 1) * 1e6).to_bytes(4, 'big') +
+                       (off & 0xFFFF).to_bytes(2, 'big'))
             self.send(T_CTRL, CH_CTRL, payload)
-            print('-> SET_TIME', flush=True)
+            print('-> SET_TIME (%s, tz %+d min)'
+                  % (datetime.datetime.now().strftime('%H:%M:%S'), off),
+                  flush=True)
         self.send(T_CTRL, CH_CTRL, bytes([C_WHOAMI]))
         self.send(T_CTRL, CH_CTRL, bytes([C_PING]))
 

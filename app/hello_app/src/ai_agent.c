@@ -22,7 +22,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <sys/time.h>
+#include <time.h>\n#include <sys/time.h>
 
 #include "ai_agent.h"
 #include "link.h"
@@ -277,9 +277,21 @@ static void handle_line(char *line)
         else if (!strncmp(line + 1, "time", 4))
         {
             struct timeval tv;
+            time_t lt;
+            struct tm tmv;
+            char stamp[32];
             char b[96];
+
             gettimeofday(&tv, NULL);
-            snprintf(b, sizeof(b), "clock=%lu (link %s)", (unsigned long)tv.tv_sec,
+            /* report through the *same* path the watch face uses
+             * (time(NULL) + localtime) so a link-side check proves what the
+             * UI will display */
+            lt = time(NULL);
+            localtime_r(&lt, &tmv);
+            strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tmv);
+            snprintf(b, sizeof(b), "%s tz=%s t=%lu (link %s)", stamp,
+                     getenv("TZ") ? getenv("TZ") : "-",
+                     (unsigned long)lt,
                      link_gateway_present() ? "up" : "down");
             ai_send("@TOOL time");
             ai_send(b);
@@ -291,7 +303,7 @@ static void handle_line(char *line)
             const char *url = line + 6;
             while (*url == ' ')
                 url++;
-            if (*url == ' ')
+            if (*url == '\0')
             {
                 ai_send("@TOOL http");
                 ai_send("usage: !http <url>");

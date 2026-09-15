@@ -9,7 +9,7 @@
 #ifndef __HUANGSHAN_DEVSHOT_H
 #define __HUANGSHAN_DEVSHOT_H
 
-#define HUANGSHAN_DEV_SHOT 0   /* dev: capture */
+#define HUANGSHAN_DEV_SHOT 0   /* 0 = release */
 
 #if HUANGSHAN_DEV_SHOT
 extern bool g_print_silent;

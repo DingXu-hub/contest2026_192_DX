@@ -536,7 +536,9 @@ static int render_task(int argc, char *argv[])
             {
                 dms = frame_start;
                 shot_dump();
-                page_next(&g_app);
+#if HUANGSHAN_DEV_SHOT > 1
+                page_next(&g_app);      /* 2 = cycle pages, 1 = stay put */
+#endif
             }
         }
 #endif

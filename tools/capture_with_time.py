@@ -9,6 +9,7 @@ real clock and the link indicator.
 usage: capture_with_time.py PORT OUTDIR SECONDS
 """
 import binascii
+import datetime
 import os
 import sys
 import time
@@ -61,18 +62,29 @@ t0 = time.time()
 sent = False
 while time.time() - t0 < DURATION:
     el = time.time() - t0
-    if not sent and el > 9.0:      # app is up by now
+    if not sent and el > 25.0:     # between the two dumps: no log bytes inside a frame
         now = time.time()
         seq += 1
+        off = int(datetime.datetime.now().astimezone()
+                  .utcoffset().total_seconds() // 60)
         paced(ser, frame(0, 0, seq, bytes([2]) + int(now).to_bytes(4, 'big') +
-                         int((now % 1) * 1e6).to_bytes(4, 'big')))
+                         int((now % 1) * 1e6).to_bytes(4, 'big') +
+                         (off & 0xFFFF).to_bytes(2, 'big')))
         print('sent SET_TIME at %.1fs' % el, flush=True)
         seq += 1
         paced(ser, frame(0, 0, seq, bytes([1])))     # PING -> gateway present
         print('sent PING', flush=True)
         sent = True
 
-    buf += ser.read(65536)
+    chunk = ser.read(65536)
+    # surface device log lines so a missed SET_TIME is visible
+    txt = chunk.decode('utf-8', 'replace')
+    for ln in txt.splitlines():
+        ln = ''.join(c for c in ln if c.isprintable())
+        if ln and any(k in ln for k in ('Link', 'clock', 'takeover', 'agent-ready',
+                                         'PONG', 'SET_TIME')):
+            print('   log|', ln[:110], flush=True)
+    buf += chunk
     if len(buf) > 4_000_000:
         buf = buf[-1_000_000:]
     while True:
