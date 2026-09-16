@@ -1,0 +1,32 @@
+using COM4
+-> SET_TIME
+gateway ready - type lines to send framed text to the watch
+  | [Link] clock set to 1789462592
+  | [IMU] gyro bias=(-1.28,3.27,0.17) deg/s (n=37)
+  | [Link] gateway online (hello)
+<- PONG uptime=2756197332 ms  rtt=52 ms
+<- @LLMREQ 1 You are a wrist-watch running coach. The user has been idle. Reply with ONE motivating tip, max 60 characters.
+   answer: (no api key)
+<- @AI proactive-ask
+  | [LCD] setpower=1
+  | [PM] -> IDLE (fps=15)
+  | [LCD] setpower=0
+  | [PM] -> SLEEP
+  | [IMU] gyro bias re-cal (-1.31,3.31,0.16) deg/s
+<- @TOOL time
+<- clock=1789462594 (link up)
+  | [LCD] setpower=1
+  | [0
+  | m
+  | [Link] gateway=present rx_frames=6 rx_bad=0 txq=0
+<- @TOOL link
+<- link: gateway=present
+  | [AC] waiting 3D motion span=(247,122,173) n=160
+  | [LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0

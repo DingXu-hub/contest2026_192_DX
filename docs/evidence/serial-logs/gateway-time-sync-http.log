@@ -1,0 +1,43 @@
+using COM4
+-> SET_TIME
+gateway ready - type lines to send framed text to the watch
+  | [LCD] setpower=1
+  | [Link] clock set to 1789458980
+<- clock synced
+<- PONG uptime=2752585573 ms  rtt=78 ms
+<- @LLMREQ 2 how should i pace a 5k (watch: run=0 dist=0.00km | mag=ok yaw=123)
+   answer: (no api key)
+  | [LCD] setpower=1
+  | [0
+  | m
+<- HTTP GET https://api.github.com/zen
+<- @TOOL http
+<- requested
+   -> HTTP 200 Responsive is better than fast.
+  | [HTTP] 200 Responsive is better than fast.
+  | [LCD] setpower=1
+  | [0
+  | m[AC] waiting 3D motion span=(242,115,153) n=256
+<- HTTP GET http://example.com
+<- @TOOL http
+<- requested
+   -> HTTP 200 <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="ico
+  | [HTTP] 200 <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in docum
+  | [LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0
+  | m[IMU] gyro bias re-cal (-1.28,3.32,0.13) deg/s
+  | [LCD] setpower=1
+  | [0
+  | m[AC] waiting 3D motion span=(245,111,130) n=256
+  | [LCD] setpower=1
+  | [0
+  | m[LCD] setpower=1
+  | [0

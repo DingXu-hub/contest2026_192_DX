@@ -1,0 +1,43 @@
+SFBL
+0ABCD[0m[33mADC calibration data missing, use defaults
+[0m[0mADC calibration ratio=1068 offset=822
+[0m[0mADC /dev/adc0 init done, ret=0
+[0m[0mINFO: LSM6DS3 test device registered as /dev/lsm6dsl0, INT=31
+[0m[0m[33mWARN: skip HAL_FLASH_Init during XIP bringup, NOR write/erase disabled
+[0m[0mINFO: NOR MTD registered at /dev/config0 (offset=2464 blocks=1024)
+[0m[0m[31mLCD putarea SKIPPED (hw_ready=0 reg=1)
+[0m[0m[LCD] setpower=75
+[0m[0mLCD hw setup done, s_lcd_hw_ready=true
+[0mhuangshan_run [8:100]
+[Huangshan] watch OS starting...
+[GPU] ePicasso ready (EPIC @ 0x50007000)
+[LCD] /dev/lcd0 ready
+[0m[LCD] setpower=1
+[0m[PM] init state=ACTIVE fps=60 backlight=50%
+[DualCore] IPC queue ready (local; LCPU mailbox hook in dual_core.c)
+[App] No .gpx on SD card
+[App] GPX loaded from /etc/data/gpx/sample.gpx: 120 points, 8.98 km, +1674 m / -1565 m
+[Sensor] task started
+[Sensor] LSM6DS3 IMU ready
+[Mag] probe 0x30: pid=0x10 (expect 0x10)
+[BT] task started
+[BT-PAN] initialized (mock transport; vendor PAN hooks in bt_pan.c)
+[BT-PAN] MOCK: connecting to phone...
+[Key] task started fd1=4 fd2=5 init K1=0 K2=0
+@AI agent-ready: type ?question or !help
+[Render] task started, target 60 fps
+[Render] fb 390x450 fmt=11
+[Render] fb mmap 0x60000010 (351000 bytes)
+[Touch] Opened /dev/input0
+[Mag] factory cal off=(-3048,3101,-9498)
+[Mag] MMC5603NJ ready @0x30 (pid=0x10)
+[ALS] LTR303ALS ready
+[BT-PAN] MOCK: connected, PANU up (mock)
+[App] GPX via BT-PAN: 58 points, 16.46 km
+[BT-PAN] MOCK: served 3599 bytes
+[0m[LCD] setpower=1
+[0m[IMU] gyro bias=(-1.27,3.28,0.13) deg/s (n=84)
+[0m[LCD] setpower=1
+[0m[IMU] gyro bias re-cal (-1.25,3.26,0.10) deg/s
+[0m[LCD] setpower=1
+--- capture done ---
