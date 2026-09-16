@@ -17,8 +17,8 @@ huangshan / 黄山派 / SF32LB52 / 指南针 / compass / mag / MMC5603 / watch U
 | 项 | 值 |
 |---|---|
 | 唯一合法工作副本 | `D:/共享文件夹/app/app/huangshan_running/`（两层 app/app，勿动 `_archive/` 与另一份 `app/huangshan_running`） |
-| VM | `dingxu@192.168.1.9`（DHCP 可能变！不通先 `ip addr` 找新 IP），工程 `/home/openvela`，构建目录 `cmake_out/lckfb_huangshan_pi` |
-| 串口 | COM3 @1Mbps 8N1（会随插拔变化，sftool 会报 Available ports）；打开端口即 RTS 复位 |
+| VM | 最近为 `dingxu@192.168.4.29`（DHCP 会变！不通先 `ip addr`/ARP 找新 IP，再改本文件），工程 `/home/openvela`，构建目录 `cmake_out/lckfb_huangshan_pi` |
+| 串口 | COM4 @1Mbps 8N1（会变；主机侧必须**开端口前**置 `dtr=False/rts=False`，否则开端口即复位板子）（会随插拔变化，sftool 会报 Available ports）；打开端口即 RTS 复位 |
 | 屏幕 | 390×450 AMOLED RGB565 `/dev/lcd0`；源码 UI 无 RTC → 表盘演示时间在 pages.c 有 demo 偏移 |
 | 传感器 | LSM6DS3 IMU + MMC5603NJ 磁力计（I2C0x30）+ LTR303；磁→设备轴映射 `(-x,+y,-z)` |
 
@@ -35,11 +35,11 @@ huangshan / 黄山派 / SF32LB52 / 指南针 / compass / mag / MMC5603 / watch U
    ```bash
    export PATH=/home/openvela/prebuilts/.../cmake...:.../build-tools...:.../gcc/...arm-none-eabi/bin:$PATH
    cd /home/openvela/cmake_out/lckfb_huangshan_pi
-   cmake --build . --target final_nuttx
-   arm-none-eabi-objcopy -O binary final_nuttx nuttx.bin
+   cmake --build . --target nuttx        # 关掉 CONFIG_ALLSYMS 后目标名是 nuttx（不再是 final_nuttx）
+   arm-none-eabi-objcopy -O binary nuttx nuttx.bin
    ```
 5. 取回并烧录：`ssh ... cat nuttx.bin > /c/sf/img/nuttx.bin`；`cd /c/sf && ./sftool.exe -c SF32LB52 -p COM3 -m nor -b 1000000 ... write_flash "C:/sf/img/nuttx.bin@0x12010000"`。
-6. 串口验证（tools/capture_boot.py / serial_monitor.py）：查 hardfault、`[Mag] factory cal off=(-3048,3101,-9498)`、`[Fuse]`2Hz、`drp=`；UI 逐页可用 tools/shot_ui.py+listen_ui.py（需要固件含一次性截图导出，已随 v3.3 移除，勿在演示固件上期待）。
+6. 串口验证（tools/capture_boot.py / serial_monitor.py）：查 hardfault、`[Mag] factory cal off=(-4169,1447,-5135)`（2026-09-15 球面拟合重标定后的值）、`[Fuse]`2Hz、`drp=`；UI 抓帧：`src/devshot.h` 置 1 → 每 20 s 自动 dump 一帧（置 2 才会翻页）→ `tools/listen_ui.py COMx <dir> <秒>`；发布固件必须置 0。
 
 ## 输出规范
 
@@ -62,3 +62,38 @@ huangshan / 黄山派 / SF32LB52 / 指南针 / compass / mag / MMC5603 / watch U
 - **字号下限**：辅助文字一律 `ui_text_scaled(...,2,...)`（10×14px）；原生 5×7 太小。新增了 `text2_center/text2_at/text2_at_center` 辅助。
 - **交互**：四角无控件；动作用中轴大按钮；**无长按**；页面跳转仅 KEY1/KEY2 短按。
 - **验证方式**：开发版 `src/devshot.h` 把 `HUANGSHAN_DEV_SHOT` 置 1 → 板子每 5s 自动翻页+导出一帧 PPM → `tools/listen_ui.py COM3 photos 70` 存 PNG → 用 vision 技能 OCR 复核「四角是否有内容/字号/重叠」。**发布构建必须置 0**（当前已置 0）。
+
+## 关键新知识（2026-09-15 实测沉淀，务必先读）
+
+### 1. 串口控制台 RX 只有"1 字节深"
+PC→设备方向背靠背写入会互相覆盖：实测 63 字节突发仅 2~19 个字符到达；4 字节一组时"每块只活最后 1 个"；
+**逐字节间隔 1 ms 发送则 63/63 零丢失**。因此所有 PC 侧工具（`tools/gateway.py`、`link_test.py`、`mic_test.py`）
+都必须 `write_paced()`（1.2 ms/字节），上层再叠 CRC16+ACK+重传。设备→PC 方向不受限（曾跑通 526 KB 帧）。
+
+### 2. NSH 抢占控制台
+`/etc/init.d/rcS` 只做 `huangshan_run &`，之后 NSH 交互 shell 仍读 `/dev/console`，与应用抢字节。
+应用启动时 `console_takeover()` 用 `nxsched_foreach()` 找 `nsh` 任务并 `kill(pid, SIGSTOP)`（`SIGCONT` 可恢复）。
+
+### 3. 资源与诊断开关
+- `src/app_diag.h`：`APP_DIAG_VERBOSE`（0=发布静默，1=打印 `[MagS]`/`[Fuse]`/`[Alive]`/`[Render]`）。
+- 板级 defconfig 关了 `CONFIG_ALLSYMS`（省 125 KB）+ GPX/轨迹缓冲缩容（共省 ~228 KB SRAM）。
+- 发布固件：`HUANGSHAN_DEV_SHOT 0` + `APP_DIAG_VERBOSE 0` + `APP_DEMO_SEED 0`。
+
+### 4. 电源管理会门控 codec 时钟
+`power_manager` 在 IDLE/SLEEP 会关外设时钟；录音等长任务必须 `pm_report_activity()`
+（`mic_audcodec.c` 通过 `mic_set_activity_hook()` 在采集路径自动保活）。
+
+### 5. 联网 = 帧协议 + PC 网关（不是板载 IP）
+板子无 WiFi、蓝牙栈为 BLE-only（无 BR/EDR → BT-PAN 不可能）→ 唯一链路是 CH340 串口。
+`src/link.c`（帧+CRC+ACK/重传+通道）+ `tools/gateway.py`（时间同步/HTTP 代理/LLM/文件通道预留）；
+设备命令：`!link` `!time` `!http <url>` `?问题`。
+
+### 6. 麦克风（板载 MEMS）bring-up 现状
+内部 AUDCODEC 的 HAL **已编进 arch 库可直接调用**（无需搬源码/Kconfig）；已补 RCC 模块时钟、
+`bf0_enable_pll()`、`Clear_All_Channel`、`ADCPath_Volume`，寄存器状态正确、DMA 已武装，
+但 **codec 仍不产生转换数据**（`ADC_CH0/CH1_ENTRY` 恒 0）。调试工具：`!mic regs|poll|sweep|ch0|ch1`。
+公开 SDK 无内部 codec 驱动（只有 DA7212）→ 需向 SiFli/立创索要 bring-up 片段。详见 `docs/麦克风硬件与实现方案.md`。
+
+### 7. 提交材料位置（本仓）
+`docs/作品介绍.md`、`docs/evidence/`（截图/串口日志/测量数据）、`docs/指南针病因分析-*.md`、
+`docs/联网功能与串口根因-*.md`、`skills/huangshan-watch-dev/`、`logs/DingXu-Hub/`（AI Coding 日志）。
