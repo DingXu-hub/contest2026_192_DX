@@ -81,12 +81,18 @@ static void skill_status(char *out, size_t outlen)
     fill_status(out, outlen);
 }
 
+/* link_http_get() returns int; the skill op table wants bool */
+static bool skill_http(const char *url)
+{
+    return link_http_get(url) == 0;
+}
+
 static const rskill_ops_t g_skill_ops = {
     .notify = skill_notify,
     .timer  = tool_timer,
     .status = skill_status,
     .ask    = llm_ask,
-    .http   = link_http_get,
+    .http   = skill_http,
 };
 
 void ai_agent_init(void)
@@ -405,6 +411,8 @@ static void handle_line(char *line)
             else if (!strncmp(arg, "skills", 6))
             {
                 int i;
+                char b[128];
+
                 snprintf(b, sizeof(b), "%d runtime skill(s) in %s",
                          rskill_count(), rskill_dir());
                 ai_send("@TOOL skills");
@@ -421,6 +429,8 @@ static void handle_line(char *line)
             else if (!strncmp(arg, "skill", 5))
             {
                 const char *nm = arg + 5;
+                char b[128];
+
                 while (*nm == ' ')
                     nm++;
                 if (!strncmp(nm, "reload", 6))
