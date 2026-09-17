@@ -62,7 +62,7 @@ static const struct {
         "weather.md",
         "name: weather\n"
         "trigger: 天气,weather\n"
-        "action: http https://wttr.in/?format=3\n"
+        "action: http https://api.open-meteo.com/v1/forecast?latitude=31.86&longitude=117.28&current_weather=1\n"
     },
 };
 

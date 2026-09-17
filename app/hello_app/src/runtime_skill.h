@@ -32,7 +32,7 @@
 #define RSKILL_MAX        8
 #define RSKILL_NAME_LEN   24
 #define RSKILL_TRIG_LEN   56
-#define RSKILL_ACT_LEN    96
+#define RSKILL_ACT_LEN    160
 #define RSKILL_SRC_LEN    28
 
 typedef struct {

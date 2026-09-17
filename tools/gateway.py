@@ -56,11 +56,14 @@ def build_frame(ftype: int, ch: int, seq: int, payload: bytes = b'') -> bytes:
     exactly that), while the payload itself follows the CRC field."""
     payload = payload[:PAYLOAD_MAX]
     head = bytes([ftype, ch, seq, len(payload) & 0xFF, (len(payload) >> 8) & 0xFF])
-    return MAGIC + head + crc16(head + payload).to_bytes(2, 'little') + payload + PAD
+    # LEAD: the console RX drops the first byte after an idle gap; make that
+    # byte a throwaway so the magic (and the CRC) always survive
+    return b'\x00\x00\x00\x00' + MAGIC + head + crc16(head + payload).to_bytes(2, 'little') + payload + PAD
 
 
 def parse_frame(buf: bytes):
     """Decode one frame (used by the self-check and by the receiver)."""
+    buf = buf.lstrip(b'\x00')      # our writes carry throwaway lead bytes
     if not buf.startswith(MAGIC) or len(buf) < 9:
         return None
     ftype, ch, seq = buf[2], buf[3], buf[4]
@@ -94,6 +97,7 @@ class Gateway:
         self.dev_seq_seen = 0
         self.rtt_ms = None
         self.log_rx = 0
+        self.wlock = threading.Lock()   # serialises the writer and ACK paths
 
     # ---------------- serial ----------------
     def open(self):
@@ -111,11 +115,14 @@ class Gateway:
         written back-to-back overwrite each other before the app can read
         them (measured: only the last byte of every 4-byte chunk survived,
         and a 63-byte burst arrived as ~15 scattered characters).  Sending
-        one byte per millisecond is lossless - verified 63/63 characters."""
-        for i in range(len(data)):
-            self.ser.write(data[i:i + 1])
-            self.ser.flush()
-            time.sleep(0.0012)
+        one byte at a time is lossless - verified 63/63 characters."""
+        # the writer thread and the frame-ACK path both write here: without a
+        # lock their bytes interleave and every frame fails CRC
+        with self.wlock:
+            for i in range(len(data)):
+                self.ser.write(data[i:i + 1])
+                self.ser.flush()
+                time.sleep(0.0025)
 
     def send(self, ftype: int, ch: int, payload: bytes = b'', retry: bool = True):
         self.seq = (self.seq + 1) & 0xFF

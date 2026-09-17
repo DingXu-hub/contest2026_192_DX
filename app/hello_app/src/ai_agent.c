@@ -70,6 +70,11 @@ static void mic_keep_awake(void)
         pm_report_activity(g_ctx->pm);
 }
 
+/* forward declarations: the skill op table below refers to these */
+static void fill_status(char *out, size_t outlen);
+static void tool_timer(int minutes);
+static void llm_ask(const char *prompt);
+
 /* capabilities handed to runtime skills (/data/agent/skills/*.md) */
 static void skill_notify(const char *src, const char *text)
 {
@@ -358,6 +363,48 @@ static void handle_line(char *line)
                 ai_agent_notify("tool", "no gateway: run tools/gateway.py");
             }
         }
+        else if (!strncmp(line + 1, "skills", 6))
+        {
+            int i;
+            char b[128];
+
+            snprintf(b, sizeof(b), "%d runtime skill(s) in %s",
+                     rskill_count(), rskill_dir());
+            ai_send("@TOOL skills");
+            ai_send(b);
+            for (i = 0; i < rskill_count(); i++)
+            {
+                const rskill_t *sk = rskill_get(i);
+                snprintf(b, sizeof(b), "- %s  trigger: %s  -> %s",
+                         sk->name, sk->trigger, sk->action);
+                ai_send(b);
+            }
+            ai_agent_notify("skill", b);
+        }
+        else if (!strncmp(line + 1, "skill", 5))
+        {
+            const char *nm = line + 6;
+            char b[128];
+
+            while (*nm == ' ')
+                nm++;
+            if (!strncmp(nm, "reload", 6))
+            {
+                snprintf(b, sizeof(b), "skills reloaded: %d", rskill_load());
+            }
+            else if (*nm == '\0')
+            {
+                snprintf(b, sizeof(b), "usage: !skill <name> | !skills | !skill reload");
+            }
+            else if (rskill_run(nm))
+            {
+                snprintf(b, sizeof(b), "skill '%s' executed", nm);
+            }
+            else
+            {
+                snprintf(b, sizeof(b), "skill '%s' not found (!skills)", nm);
+            }
+        }
         else if (!strncmp(line + 1, "mic", 3))
         {
             const char *arg = line + 4;
@@ -407,48 +454,6 @@ static void handle_line(char *line)
             {
                 mic_dump_regs();
                 snprintf(b, sizeof(b), "regs dumped");
-            }
-            else if (!strncmp(arg, "skills", 6))
-            {
-                int i;
-                char b[128];
-
-                snprintf(b, sizeof(b), "%d runtime skill(s) in %s",
-                         rskill_count(), rskill_dir());
-                ai_send("@TOOL skills");
-                ai_send(b);
-                for (i = 0; i < rskill_count(); i++)
-                {
-                    const rskill_t *sk = rskill_get(i);
-                    snprintf(b, sizeof(b), "- %s  trigger: %s  -> %s",
-                             sk->name, sk->trigger, sk->action);
-                    ai_send(b);
-                }
-                ai_agent_notify("skill", b);
-            }
-            else if (!strncmp(arg, "skill", 5))
-            {
-                const char *nm = arg + 5;
-                char b[128];
-
-                while (*nm == ' ')
-                    nm++;
-                if (!strncmp(nm, "reload", 6))
-                {
-                    snprintf(b, sizeof(b), "skills reloaded: %d", rskill_load());
-                }
-                else if (*nm == '\0')
-                {
-                    snprintf(b, sizeof(b), "usage: !skill <name> | !skills | !skill reload");
-                }
-                else if (rskill_run(nm))
-                {
-                    snprintf(b, sizeof(b), "skill '%s' executed", nm);
-                }
-                else
-                {
-                    snprintf(b, sizeof(b), "skill '%s' not found (!skills)", nm);
-                }
             }
             else if (!strncmp(arg, "sweep", 5))
             {

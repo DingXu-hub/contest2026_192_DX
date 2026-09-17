@@ -28,7 +28,7 @@ def crc16(d):
 
 def frame(ftype, ch, seq, payload=b''):
     head = bytes([ftype, ch, seq, len(payload) & 0xff, (len(payload) >> 8) & 0xff])
-    return MAGIC + head + crc16(head + payload).to_bytes(2, 'little') + payload + PAD
+    return b'\x00\x00' + MAGIC + head + crc16(head + payload).to_bytes(2, 'little') + payload + PAD
 
 
 def main():
@@ -61,7 +61,7 @@ def main():
         for i in range(len(data)):
             ser.write(data[i:i + 1])
             ser.flush()
-            time.sleep(0.0012)
+            time.sleep(0.0025)
 
     # wait for the app
     b = b''
