@@ -27,6 +27,7 @@
 #include "ai_agent.h"
 #include "link.h"
 #include "mic_audcodec.h"
+#include "runtime_skill.h"
 #include "pages.h"
 #include "sensor_manager.h"
 #include "run_engine.h"
@@ -69,11 +70,32 @@ static void mic_keep_awake(void)
         pm_report_activity(g_ctx->pm);
 }
 
+/* capabilities handed to runtime skills (/data/agent/skills/*.md) */
+static void skill_notify(const char *src, const char *text)
+{
+    ai_agent_notify(src, text);
+}
+
+static void skill_status(char *out, size_t outlen)
+{
+    fill_status(out, outlen);
+}
+
+static const rskill_ops_t g_skill_ops = {
+    .notify = skill_notify,
+    .timer  = tool_timer,
+    .status = skill_status,
+    .ask    = llm_ask,
+    .http   = link_http_get,
+};
+
 void ai_agent_init(void)
 {
     memset(&g_ai, 0, sizeof(g_ai));
     link_set_http_sink(http_card);
     mic_set_activity_hook(mic_keep_awake);
+    rskill_set_ops(&g_skill_ops);
+    rskill_init();               /* seeds + loads /data/agent/skills */
 }
 
 void ai_agent_set_context(void *app_ctx)
@@ -165,7 +187,7 @@ static void tool_timer(int minutes)
 }
 
 static const char *g_help =
-    "tools: !start !stop !status !timer N !tip !link !time !http URL !mic .. !help | ?question";
+    "tools: !start !stop !status !timer N !tip !link !time !http URL !skills !skill N !mic .. !help | ?question";
 
 /* ---------------- LLM bridge ---------------- */
 
@@ -230,7 +252,7 @@ static void handle_line(char *line)
     if (line[0] != '?' && line[0] != '!' && line[0] != '@')
     {
         static const char *const bare[] = { "start", "stop", "status",
-                                            "timer", "tip", "link", "time", "http", "mic", "help", NULL };
+                                            "timer", "tip", "link", "time", "http", "mic", "skills", "skill", "help", NULL };
         int i;
 
         for (i = 0; bare[i]; i++)
@@ -380,6 +402,44 @@ static void handle_line(char *line)
                 mic_dump_regs();
                 snprintf(b, sizeof(b), "regs dumped");
             }
+            else if (!strncmp(arg, "skills", 6))
+            {
+                int i;
+                snprintf(b, sizeof(b), "%d runtime skill(s) in %s",
+                         rskill_count(), rskill_dir());
+                ai_send("@TOOL skills");
+                ai_send(b);
+                for (i = 0; i < rskill_count(); i++)
+                {
+                    const rskill_t *sk = rskill_get(i);
+                    snprintf(b, sizeof(b), "- %s  trigger: %s  -> %s",
+                             sk->name, sk->trigger, sk->action);
+                    ai_send(b);
+                }
+                ai_agent_notify("skill", b);
+            }
+            else if (!strncmp(arg, "skill", 5))
+            {
+                const char *nm = arg + 5;
+                while (*nm == ' ')
+                    nm++;
+                if (!strncmp(nm, "reload", 6))
+                {
+                    snprintf(b, sizeof(b), "skills reloaded: %d", rskill_load());
+                }
+                else if (*nm == '\0')
+                {
+                    snprintf(b, sizeof(b), "usage: !skill <name> | !skills | !skill reload");
+                }
+                else if (rskill_run(nm))
+                {
+                    snprintf(b, sizeof(b), "skill '%s' executed", nm);
+                }
+                else
+                {
+                    snprintf(b, sizeof(b), "skill '%s' not found (!skills)", nm);
+                }
+            }
             else if (!strncmp(arg, "sweep", 5))
             {
                 /* walk plausible ADC clock configurations and report the
@@ -479,6 +539,12 @@ static void handle_line(char *line)
         g_ai.last_answer_ms = now_ms();
         ai_agent_notify("answer",
                         g_ai.last_answer[0] ? g_ai.last_answer : "(empty)");
+    }
+    else
+    {
+        /* free text (typed on the console or sent by the PC gateway) can be
+         * claimed by a runtime skill via its trigger keywords */
+        rskill_try_trigger(line);
     }
 }
 
