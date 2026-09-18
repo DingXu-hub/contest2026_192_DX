@@ -21,10 +21,21 @@
 
 | 项目 | 结果 | 依据 |
 |---|---|---|
-| 资源 | Flash 34.6%、SRAM 39.3%（优化前 81.8%） | 构建内存报告 + `nm --size-sort` |
+| 资源 | Flash 34.6%、SRAM 38.2%（优化前 81.8%） | 构建内存报告 + `nm --size-sort` |
 | 磁校准 | Fusion 磁误差 90°→0–1°；\|B\| 朝向不变（35–56 µT） | `docs/evidence/measurements/*.json` + 串口日志 |
+| 6 轴姿态 | `!att test` 9/9 PASS；静止 3 分钟 yaw 漂移 +0.03~+0.10 °/min | `tools/att_still.py` 输出、`docs/evidence/measurements/att-stillness-3min.log` |
 | 链路 | ACK 6/6、RTT 52–79 ms、时间同步同秒、HTTP 200 | `docs/evidence/serial-logs/*.log` |
 | 渲染 | 目标 60 fps，实测 15–33 fps | 串口 `[Render] fps=` |
+
+## 最新提交（2026-09-17 晚）
+
+**6 轴姿态改用官方 Fusion 链路**：`attitude6.c` 从自写欧拉角互补滤波改为薄封装官方无磁路径
+（`FusionBiasUpdate` → `FusionAhrsUpdateNoMagnetometer` → `FusionQuaternionToEuler`，NED、
+`gyroscopeRange=2000 dps`、`accelerationRejection=15°/5 s`、每帧真实 dt）；唯一保留的自研部分是
+**输入毛刺迟滞过滤**（官方超量程检查在 ±1960 dps 附近才触发，抓不到本板 18–30 dps 单样本读毛刺）。
+合成真值自检按官方链路重建（9 用例 ALL PASS），并因此抓到并修掉自写过滤会“吞掉从静止开始的真实转动”的缺陷。
+同时把 6 轴航向接入跑步航位推算（死区 4°→1°、符号修正为顺时针为正、起跑基准取相对 yaw），
+轨迹随真实转向弯曲；演示数据写入一条 150 点 / 3417 m 闭环供截图。
 
 ## 如实说明（不足）
 
