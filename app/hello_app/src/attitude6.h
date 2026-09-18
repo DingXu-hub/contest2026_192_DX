@@ -65,6 +65,8 @@ typedef struct {
     bool  gravity_valid;
     bool  converged;               /* roll/pitch settled after start */
     bool  still;                   /* body judged stationary this sample */
+    float gyro_mag_avg;            /* EMA of |gyro|, used for spike rejection */
+    uint32_t spikes;               /* samples rejected as spikes */
     uint32_t samples;
     float    last_dt;
 } attitude6_t;

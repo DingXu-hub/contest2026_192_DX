@@ -99,6 +99,32 @@ void attitude6_update(attitude6_t *a, float ax, float ay, float az,
         gz -= a->gyro_bias[2];
     }
 
+    /* ---- spike rejection ------------------------------------------- *
+     * A single-sample gyro excursion far above the recent level is sensor
+     * noise, not motion: measured on a still watch, occasional >2 deg/s
+     * spikes slipped past the stillness gate and their (small) vertical
+     * projection stepped the yaw by ~1 deg every ~25 s - the "compass still
+     * moves when stationary" symptom.  A genuine turn is sustained, so the
+     * running average follows it and it is never rejected. */
+    {
+        float gmag = sqrtf(gx * gx + gy * gy + gz * gz);
+
+        if (a->samples == 0)
+        {
+            a->gyro_mag_avg = gmag;      /* prime exactly once */
+        }
+        else if (gmag > 4.0f * a->gyro_mag_avg + 3.0f)
+        {
+            gx = gy = gz = 0.0f;         /* drop the whole sample */
+            a->spikes++;
+        }
+        else
+        {
+            a->gyro_mag_avg += (gmag - a->gyro_mag_avg) *
+                               (1.0f - expf(-dt / 2.0f));
+        }
+    }
+
     amag = sqrtf(ax * ax + ay * ay + az * az);
 
     if (amag > 0.05f)
@@ -300,6 +326,37 @@ bool attitude6_selftest(char *report, size_t report_len)
         snprintf(line, sizeof(line),
                  "%s %-18s residual 0.3 deg/s learnt -> yaw %+.1f deg (unlearnt: 18.0)\n",
                  ok ? "[PASS]" : "[FAIL]", "zupt learns bias", a.yaw);
+        if (report && report_len > strlen(report) + strlen(line) + 1)
+            strcat(report, line);
+        printf("%s", line);
+    }
+
+    /* Spike rejection: single-sample gyro spikes on a still body must not
+     * step the heading (this is the "compass still moves" symptom). */
+    {
+        attitude6_t a;
+        float dt = 0.01f;
+        int i;
+        char line[170];
+        bool ok;
+
+        attitude6_init(&a);
+        for (i = 0; i < 6000; i++)            /* 60 s at 100 Hz */
+        {
+            float ax, ay, az, spike = 0.0f;
+
+            synth_accel(0.0f, 0.0f, &ax, &ay, &az);
+            if ((i % 200) == 0)               /* a 30 deg/s spike every 2 s */
+                spike = 30.0f;
+            attitude6_update(&a, ax, ay, az, 0.0f, 0.0f, spike, dt);
+        }
+        ok = fabsf(a.yaw) < 1.0f;
+        if (!ok)
+            fail++;
+        snprintf(line, sizeof(line),
+                 "%s %-18s 30 dps spike every 2 s -> yaw %+.2f deg, %lu rejected\n",
+                 ok ? "[PASS]" : "[FAIL]", "spike rejection", a.yaw,
+                 (unsigned long)a.spikes);
         if (report && report_len > strlen(report) + strlen(line) + 1)
             strcat(report, line);
         printf("%s", line);
