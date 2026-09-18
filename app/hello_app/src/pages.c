@@ -623,7 +623,7 @@ static void page_run_map_render(app_ctx_t *ctx, uint32_t now_ms)
 }
 
 /* ------------------------------------------------------------------ *
- * page: compass (rotating dial, centre CALIBRATE button)
+ * page: compass (6-axis relative compass: rotating dial + tilt + SET 0)
  * ------------------------------------------------------------------ */
 
 /* Adaptive smoother with directional confirmation (see git history). */
@@ -722,39 +722,32 @@ static void page_compass_render(app_ctx_t *ctx, uint32_t now_ms)
     const int cx = SCREEN_W / 2, cy = 206, R = 112;
     const pixel_t acc = ui_accent_for(PAGE_COMPASS);
     float hdg;
-    bool mag_ok;
     int a, deg;
 
     (void)now_ms;
 
     clear_screen(rs, UI_BG);
 
-    /* magnetic source state (modern pill) */
-    mag_ok = (sen && sen->mag.present && sen->mag.healthy &&
-              !sen->mag_dropped);
-    if (sen && !sen->mag.present)
-        ui_status_pill(rs->cbuf, rs->buf_width, rs->buf_height,
-                       SCREEN_W / 2, 20, "NO MAG", UI_TEXT_DIM,
-                       UI_CARD, 0);
-    else if (mag_ok)
-        ui_status_pill(rs->cbuf, rs->buf_width, rs->buf_height,
-                       SCREEN_W / 2, 20, "MAGNETIC", acc, UI_CARD, acc);
-    else
-        ui_status_pill(rs->cbuf, rs->buf_width, rs->buf_height,
-                       SCREEN_W / 2, 20, "GYRO ONLY", UI_TEXT_FAINT,
-                       UI_CARD, UI_ACC_ORANGE);
+    /* This dial shows a RELATIVE bearing: there is no magnetometer in the
+     * heading path (see attitude6.c), so the needle points at the direction
+     * that was zeroed by SET 0.  Roll/pitch come from gravity and the turn
+     * rate is the gravity-projected gyro - both are what 6 axes can verify. */
+    ui_status_pill(rs->cbuf, rs->buf_width, rs->buf_height,
+                   SCREEN_W / 2, 20, "6-AXIS REL", acc, UI_CARD, acc);
 
-    /* tilt readout (tracked micro line) */
-    if (sen && sen->imu.present)
+    /* tilt readout: filtered attitude with the accel-only reference */
+    if (sen)
     {
-        snprintf(buf, sizeof(buf), "PITCH %+03d  ROLL %+03d",
-                 (int)sen->imu.pitch, (int)sen->imu.roll);
+        const attitude6_t *at = sensor_get_attitude(sen);
+
+        snprintf(buf, sizeof(buf), "ROLL %+03d  PITCH %+03d  RATE %+03d",
+                 (int)(at->roll + (at->roll < 0 ? -0.5f : 0.5f)),
+                 (int)(at->pitch + (at->pitch < 0 ? -0.5f : 0.5f)),
+                 (int)(at->yaw_rate + (at->yaw_rate < 0 ? -0.5f : 0.5f)));
         label_center(rs->cbuf, rs->buf_width, 54, buf, UI_TEXT_FAINT);
     }
 
-    hdg = compass_smooth(ctx,
-                         (sen ? sen->heading_deg : 0.0f) +
-                         (float)ctx->decl_deg);
+    hdg = compass_smooth(ctx, (sen ? sen->heading_deg : 0.0f));
     while (hdg >= 360.0f) hdg -= 360.0f;
     while (hdg < 0.0f) hdg += 360.0f;
     deg = (int)(hdg + 0.5f) % 360;
@@ -822,7 +815,7 @@ static void page_compass_render(app_ctx_t *ctx, uint32_t now_ms)
     rnum_cx(rs, cx, cy - 34, buf, 54, UI_TEXT);
     label_cx(rs->cbuf, rs->buf_width, cx, cy + 34, compass_rose(deg), acc);
 
-    draw_btn(rs, SCREEN_W / 2, CMP_BTN_Y, BTN_W1, "CALIBRATE", acc);
+    draw_btn(rs, SCREEN_W / 2, CMP_BTN_Y, BTN_W1, "SET 0", acc);
 
     ui_dots(rs->cbuf, rs->buf_width, rs->buf_height, PAGE_COMPASS);
 }
@@ -990,9 +983,9 @@ static void page_settings_render(app_ctx_t *ctx, uint32_t now_ms)
              y0 + 2 * row_h + 16, buf,
              ctx->decl_deg == 0 ? UI_TEXT_DIM : UI_ACC_ORANGE);
 
-    /* compass calibration */
+    /* zero the relative heading (6-axis has no absolute north reference) */
     label_at(rs->cbuf, rs->buf_width, tx, y0 + 3 * row_h + 16,
-             "COMPASS CAL", UI_TEXT);
+             "ZERO HEADING", UI_TEXT);
     label_at(rs->cbuf, rs->buf_width, rx - 42, y0 + 3 * row_h + 16,
              "TAP", UI_ACC_ORANGE);
 
@@ -1226,13 +1219,13 @@ int page_render(app_ctx_t *ctx, uint32_t now_ms)
  * Navigation is exclusively via KEY1 (prev) / KEY2 (next) in main.c.
  * ------------------------------------------------------------------ */
 
-static void tap_calibrate(app_ctx_t *ctx)
+/* The compass is 6-axis only, so there is no magnetic calibration to run:
+ * the centre button (and the settings row) reset the relative bearing. */
+static void tap_zero_heading(app_ctx_t *ctx)
 {
-    if (ctx->sensors && !ctx->sensors->mag.calib_running)
+    if (ctx->sensors)
     {
-        sensor_calibrate_magnetometer(ctx->sensors, CALIB_MS);
-        ctx->calib_end_ms = ctx->now_ms + CALIB_MS;
-        ctx->calib_dur_ms = CALIB_MS;
+        sensor_zero_heading(ctx->sensors);
         ctx->ui.dirty = true;
     }
 }
@@ -1346,7 +1339,7 @@ void page_handle_touch(app_ctx_t *ctx, touch_event_t ev)
 
     case PAGE_COMPASS:
         if (btn_hit(tx, ty, SCREEN_W / 2, CMP_BTN_Y, BTN_W1))
-            tap_calibrate(ctx);
+            tap_zero_heading(ctx);
         break;
 
     case PAGE_STATS:
@@ -1383,7 +1376,7 @@ void page_handle_touch(app_ctx_t *ctx, touch_event_t ev)
         }
         else if (ty >= 212 && ty < 268)
         {
-            tap_calibrate(ctx);
+            tap_zero_heading(ctx);
         }
         break;
 

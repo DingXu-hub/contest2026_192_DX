@@ -9,6 +9,7 @@ set(SRCS
     src/gpu_epic.c
     src/touch_handler.c
     src/sensor_manager.c
+    src/attitude6.c
     src/madgwick.c
     src/mag_mmc5603.c
     src/als_ltr303.c
@@ -25,7 +26,6 @@ set(SRCS
     src/runtime_skill.c
     src/ai_agent.c
     src/ppp_link.c
-    src/fusion/FusionAhrs.c
 )
 
 if(CONFIG_EXAMPLES_HUANGSHAN_RUNNING_USE_BT_PAN)

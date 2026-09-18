@@ -39,7 +39,7 @@ struct lsm6dsl_sensor_data_s
 
 #include "sensor_manager.h"
 #include "madgwick.h"
-#include "fusion/Fusion.h"
+#include "attitude6.h"
 #include "kv_store.h"
 #include "app_diag.h"
 #include "devshot.h"
@@ -79,8 +79,13 @@ static int g_imu_fd = -1;
 /* xioTechnologies/Fusion AHRS: industry-standard 9-axis quaternion
  * attitude/heading filter with built-in acceleration and magnetic
  * rejection (handles shaking and interference without custom gating). */
-static FusionAhrs s_ahrs;
-static bool s_ahrs_init = false;
+/* 6-axis attitude estimator (gyro + accelerometer).  The magnetometer is
+ * deliberately NOT part of the heading: its hard-iron error reached 27 uT on
+ * this unit and the workspace field is 3.7x the geomagnetic field, so a
+ * magnetic heading cannot be validated here (see docs/指南针病因分析).
+ * The estimator's signs/units are pinned by attitude6_selftest(). */
+static attitude6_t s_att;
+static bool s_att_init;
 
 int sensor_init(sensor_manager_t *mgr)
 {
@@ -104,38 +109,13 @@ int sensor_init(sensor_manager_t *mgr)
 
     mag_mmc5603_init(&mgr->mag, SENSOR_I2C);
 
-    /* xioTechnologies/Fusion AHRS: 9-axis quaternion heading.  Convention
-     * NED with body X = 12 o'clock / Y = 3 o'clock / Z = into screen makes
-     * the yaw equal the bearing of 12 o'clock from magnetic north (the
-     * same value the flat formula atan2f(-my,mx) gives on a flat board —
-     * validated 311 deg true bearing -> 310 deg).  Acceleration rejection
-     * discards shaking; magnetic rejection discards field interference;
-     * both recover after rejectionTimeout. */
-    FusionAhrsInitialise(&s_ahrs);
-    FusionAhrsSettings ahrs_settings = fusionAhrsDefaultSettings;
-    /* nominal 20 ms tick; the real per-update period is fed to the filter
-     * via FusionAhrsSetSamplePeriod below (loop runs ~28 Hz), so this
-     * value only scales the rejection/recovery sample counters */
-    ahrs_settings.sampleRate = 28.0f;
-    ahrs_settings.convention = FusionConventionNed;
-    ahrs_settings.gyroscopeRange = 2000.0f;   /* LSM6DS3 full scale */
-    /* Rejection re-enabled after the axis-validation round: sensor axes
-     * (accel/gyro X,Y inverted vs the watch frame; mag Z offset fixed)
-     * are confirmed, so the attitude tracks correctly and the residual
-     * rejection only discards genuine shaking / field interference. */
-    ahrs_settings.accelerationRejection = 15.0f;
-    ahrs_settings.magneticRejection = 15.0f;
-    ahrs_settings.rejectionTimeout = 5.0f;
-    FusionAhrsSetSettings(&s_ahrs, &ahrs_settings);
-    /* DSH patch: let the magnetometer recover much more slowly than the
-     * accelerometer (~20 s vs 5 s) so a disturbed field is not re-accepted
-     * every few seconds (each re-acceptance can yank the yaw by 100 deg).
-     * Threshold is synced right away so the longer recovery applies from
-     * the very first rejection event, not after the first re-arm. */
-    s_ahrs.magneticRecoveryTimeout =
-        (int32_t)(ahrs_settings.sampleRate * 20.0f);
-    s_ahrs.magneticRecoveryThreshold = s_ahrs.magneticRecoveryTimeout;
-    s_ahrs_init = true;
+    /* 6-axis attitude (gyro + accelerometer only) - see the note on s_att.
+     * Roll/pitch come from gravity; yaw is a relative bearing integrated
+     * from the gravity-projected gyro rate.  All conventions and the unit
+     * checks live in src/attitude6.c, and the synthetic self-test
+     * (`!att test`) fails loudly if any sign/frame is wrong. */
+    attitude6_init(&s_att);
+    s_att_init = true;
     als_ltr303_init(&mgr->als, SENSOR_I2C);
 
     mgr->backlight_pct = 50;
@@ -218,7 +198,7 @@ static void sensor_update_imu(sensor_manager_t *mgr)
         /* The LSM6DS3 is mounted rotated 180 degrees in-plane: the chip's
          * X/Y axes point toward 6/9 o'clock while the watch frame uses
          * X = 12 o'clock, Y = 3 o'clock, Z = into the screen.  Negate the
-         * chip X/Y so all sensor data (and the Fusion feed) lives in the
+         * chip X/Y so all sensor data (and the attitude input) lives in the
          * watch frame; Z already matches.  (Verified empirically: raising
          * 12 o'clock must give +ax, holding 12 o'clock up must give +ax
          * ~= +1 g; both read inverted before this remap.) */
@@ -851,151 +831,79 @@ void sensor_update(sensor_manager_t *mgr)
         }
     }
 
-    /* Compass heading: xioTechnologies/Fusion AHRS (industry-standard).
+    /* Heading: 6-axis relative bearing (attitude6.c) - no magnetometer.
      * Fuses gyro + accel + magnetometer into a quaternion; the built-in
      * acceleration rejection discards linear-acceleration-corrupted
      * samples (shaking/swinging) and the magnetic rejection discards
      * field interference — the two failure modes that plagued the
      * hand-rolled fusion.  Units: gyro deg/s, accel g, mag any calibrated
      * unit (we feed the driver-calibrated uT). */
-    if (s_ahrs_init)
+    /* ---- 6-axis attitude (gyroscope + accelerometer) ------------------ *
+     * The magnetometer is NOT in the heading path: on this unit its
+     * hard-iron error reached 27 uT and the workspace field measures 3.7x
+     * the geomagnetic field, so a magnetic heading cannot be validated
+     * here.  What a wrist device can deliver honestly is what attitude6.c
+     * computes: roll/pitch from gravity (absolute reference) and a
+     * *relative* yaw integrated from the gravity-projected gyro rate.
+     *
+     * Every convention is pinned to measured hardware behaviour and the
+     * synthetic self-test (`!att test`) fails loudly if a sign, unit or
+     * frame is wrong - suspect the code first, not the sensor. */
+    if (s_att_init)
     {
-        /* The sensor task runs slower than the nominal 20 ms (mag polling
-         * + IPC + scheduling take ~15 ms more), so a fixed sample period
-         * under-integrates the gyro by ~40 % (measured: a 53 deg lift
-         * integrated only 24 deg).  Feed the real elapsed time each
-         * update so gyro integration and the startup ramp are exact. */
         uint32_t now_ms = get_time_ms();
         float dt = (float)(now_ms - mgr->last_fusion_ms) / 1000.0f;
+
         mgr->last_fusion_ms = now_ms;
-        if (dt > 0.001f && dt < 0.5f)
-            FusionAhrsSetSamplePeriod(&s_ahrs, dt);
 
-        const FusionVector gyroscope = {
-            .axis = { mgr->imu.gx, mgr->imu.gy, mgr->imu.gz },
-        };
-        const FusionVector accelerometer = {
-            .axis = { mgr->imu.ax / G_MS2, mgr->imu.ay / G_MS2,
-                      mgr->imu.az / G_MS2 },
-        };
-        const FusionVector magnetometer = {
-            .axis = { mgr->mag.x_g, mgr->mag.y_g, mgr->mag.z_g },
-        };
+        attitude6_update(&s_att,
+                         mgr->imu.ax / G_MS2, mgr->imu.ay / G_MS2,
+                         mgr->imu.az / G_MS2,
+                         mgr->imu.gx, mgr->imu.gy, mgr->imu.gz, dt);
 
-        mgr->mag_healthy = (mgr->mag.present && mgr->mag.healthy);
+        mgr->imu.roll  = s_att.roll;
+        mgr->imu.pitch = s_att.pitch;
 
-        /* Magnetic-field sanity gate: when the ambient field is heavily
-         * disturbed (hand/desk/phone steel absorbs or redirects it), the
-         * magnetometer reports a wrong DIRECTION with an abnormally weak
-         * magnitude.  Feeding it makes the fused yaw snap toward the wrong
-         * heading whenever the rejection/recovery toggles (measured: -100
-         * deg jumps while rotating hand-held, and a wrong "initial
-         * position" at rest).  If the total field magnitude is far from
-         * the local ~50 uT, drop the mag and run gyro+accel only (the
-         * stillness bias re-calibration keeps the yaw from drifting much);
-         * re-enable with hysteresis once the field looks sane again.  The
-         * first ~2.5 s after boot always use the mag so the heading
-         * initialises even at a weak spot. */
         {
-            float mnorm = sqrtf(mgr->mag.x_g * mgr->mag.x_g +
-                                mgr->mag.y_g * mgr->mag.y_g +
-                                mgr->mag.z_g * mgr->mag.z_g);
-            static bool mag_suspect;
-            static uint32_t boot_ms;
-            static bool boot_init;
-            bool in_boot;
+            float yaw = s_att.yaw;
 
-            if (!boot_init)
-            {
-                boot_ms = get_time_ms();
-                boot_init = true;
-            }
-            in_boot = (get_time_ms() - boot_ms) < 2500;
-
-            if (in_boot)
-                mag_suspect = false;
-            else if (mnorm < 20.0f || mnorm > 80.0f)
-                mag_suspect = true;
-            else if (mnorm > 28.0f && mnorm < 65.0f)
-                mag_suspect = false;
-
-            /* Feed decision: |B| is a scalar invariant, so with a correct
-             * hard-iron calibration it stays inside the Earth's 25..65 uT
-             * window however the watch is held (the 2026-09-15 sphere-fit
-             * calibration reads 47.5 uT = the local geomagnetic total
-             * field).  The old 12/130 uT bands were wide enough to accept
-             * the corrupted 112 uT data that a wrong Z offset produced
-             * while still flapping on valid samples.  These bands only
-             * catch gross errors - ambient field *disturbances* are what
-             * Fusion's magnetic rejection is for.  During the boot window
-             * we anchor the heading on the magnetometer so the gyro-only
-             * fallback starts from a real heading, but only while the
-             * magnitude is physically plausible. */
-            bool feed_mag = in_boot
-                                ? (mgr->mag.present && mnorm > 20.0f &&
-                                   mnorm < 80.0f)
-                                : (mgr->mag_healthy && !mag_suspect);
-
-            if (feed_mag)
-            {
-                FusionAhrsUpdate(&s_ahrs, gyroscope, accelerometer,
-                                 magnetometer);
-            }
-            else
-            {
-                /* no/invalid or suspicious magnetometer: gyro+accel only
-                 * (drifts slowly, but keeps the anchored heading) */
-                FusionAhrsUpdateNoMagnetometer(&s_ahrs, gyroscope,
-                                               accelerometer);
-            }
-            /* expose the decision for the UI (MAG vs GYRO source label) */
-            mgr->mag_dropped = !feed_mag;
+            while (yaw >= 360.0f)
+                yaw -= 360.0f;
+            while (yaw < 0.0f)
+                yaw += 360.0f;
+            mgr->heading_deg = yaw;
         }
+        mgr->heading_valid = s_att.converged;
+        mgr->mag_dropped = true;   /* no magnetometer in the heading path */
 
-        FusionEuler euler = FusionQuaternionToEuler(
-            FusionAhrsGetQuaternion(&s_ahrs));
-        float yaw = euler.angle.yaw;              /* degrees, NED */
-        while (yaw >= 360.0f) yaw -= 360.0f;
-        while (yaw < 0.0f) yaw += 360.0f;
-        mgr->heading_deg = yaw;
-        mgr->heading_valid = true;
-
-        /* 2 Hz diagnostic: Fusion yaw/roll/pitch vs the flat reference
-         * formula; raw = pre-remap chip values; ea/em = residual errors */
 #if APP_DIAG_VERBOSE
+        /* 2 Hz diagnostic: filtered attitude, the independent accel-only
+         * reference (roll_a/pitch_a) and the raw inputs - the numbers a
+         * reviewer needs to check the estimator against reality. */
         {
             static uint32_t dbg_ms;
-            if (now - dbg_ms >= 500 && !g_net_silent
+
+            if (now_ms - dbg_ms >= 500 && !g_net_silent
 #if HUANGSHAN_DEV_SHOT
                 && !g_print_silent
 #endif
                )
             {
-                dbg_ms = now;
-                float flat = atan2f(-mgr->mag.y_g, mgr->mag.x_g) *
-                             57.29578f;
-                if (flat < 0.0f) flat += 360.0f;
-                FusionAhrsFlags flags = FusionAhrsGetFlags(&s_ahrs);
-                FusionAhrsInternalStates st =
-                    FusionAhrsGetInternalStates(&s_ahrs);
-                printf("[Fuse] yaw=%.0f roll=%.0f pit=%.0f flat=%.0f "
-                       "ax=%.2f ay=%.2f az=%.2f gx=%.1f gy=%.1f gz=%.1f "
-                       "raw=(%d,%d,%d,%d,%d,%d) ea=%.0f em=%.0f "
-                       "ar=%d mr=%d drp=%d\n",
-                       mgr->heading_deg, euler.angle.roll, euler.angle.pitch,
-                       flat,
-                       mgr->imu.ax, mgr->imu.ay, mgr->imu.az,
+                dbg_ms = now_ms;
+                printf("[Att] yaw=%+.1f roll=%+.1f/%+.1f pit=%+.1f/%+.1f "
+                       "rate=%+.1f dt=%.3f | a=(%+.2f,%+.2f,%+.2f)g "
+                       "g=(%+.1f,%+.1f,%+.1f)dps |bias|=%d\n",
+                       s_att.yaw, s_att.roll, s_att.roll_a,
+                       s_att.pitch, s_att.pitch_a, s_att.yaw_rate, s_att.last_dt,
+                       mgr->imu.ax / G_MS2, mgr->imu.ay / G_MS2,
+                       mgr->imu.az / G_MS2,
                        mgr->imu.gx, mgr->imu.gy, mgr->imu.gz,
-                       mgr->imu.raw_ax, mgr->imu.raw_ay, mgr->imu.raw_az,
-                       mgr->imu.raw_gx, mgr->imu.raw_gy, mgr->imu.raw_gz,
-                       st.accelerationError, st.magneticError,
-                       (int)flags.accelerationRecovery,
-                       (int)flags.magneticRecovery,
-                       (int)mgr->mag_dropped);
+                       (int)s_att.gyro_bias_valid);
             }
         }
 #endif
     }
+
 
     if (now - mgr->last_als_ms >= ALS_SAMPLE_INTERVAL_MS)
     {
@@ -1045,4 +953,18 @@ void sensor_deinit(sensor_manager_t *mgr)
     }
     mag_mmc5603_deinit(&mgr->mag);
     als_ltr303_deinit(&mgr->als);
+}
+
+/* 6-axis attitude for the UI / diagnostics (single estimator instance) */
+const attitude6_t *sensor_get_attitude(sensor_manager_t *mgr)
+{
+    (void)mgr;
+    return &s_att;
+}
+
+/* make the current direction the new zero (relative-bearing compass) */
+void sensor_zero_heading(sensor_manager_t *mgr)
+{
+    (void)mgr;
+    attitude6_zero_yaw(&s_att);
 }

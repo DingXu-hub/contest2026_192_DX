@@ -18,6 +18,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "attitude6.h"
+
 #include "mag_mmc5603.h"
 #include "als_ltr303.h"
 
@@ -78,6 +80,11 @@ typedef struct {
 int    sensor_init(sensor_manager_t *mgr);
 void   sensor_update(sensor_manager_t *mgr);
 float  sensor_get_heading(sensor_manager_t *mgr);
+
+
+/* 6-axis attitude (roll/pitch/yaw) for the UI and diagnostics */
+const attitude6_t *sensor_get_attitude(sensor_manager_t *mgr);
+void  sensor_zero_heading(sensor_manager_t *mgr);
 bool   sensor_mag_calibrating(sensor_manager_t *mgr);
 bool   sensor_detect_raise(sensor_manager_t *mgr);
 bool   sensor_view_locked(sensor_manager_t *mgr);

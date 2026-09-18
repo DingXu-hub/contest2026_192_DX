@@ -198,7 +198,7 @@ static void tool_timer(int minutes)
 }
 
 static const char *g_help =
-    "tools: !start !stop !status !timer N !tip !link !time !http URL !skills !skill N !mic .. !help | ?question";
+    "tools: !start !stop !status !timer N !tip !link !time !http URL !att [test] !skills !skill N !mic .. !help | ?question";
 
 /* ---------------- LLM bridge ---------------- */
 
@@ -263,7 +263,7 @@ static void handle_line(char *line)
     if (line[0] != '?' && line[0] != '!' && line[0] != '@')
     {
         static const char *const bare[] = { "start", "stop", "status",
-                                            "timer", "tip", "link", "time", "http", "mic", "skills", "skill", "help", NULL };
+                                            "timer", "tip", "link", "time", "http", "mic", "skills", "skill", "att", "help", NULL };
         int i;
 
         for (i = 0; bare[i]; i++)
@@ -362,6 +362,51 @@ static void handle_line(char *line)
                 ai_send("no gateway (start tools/gateway.py)");
                 ai_agent_notify("tool", "no gateway: run tools/gateway.py");
             }
+        }
+        else if (!strncmp(line + 1, "att", 3))
+        {
+            const char *arg = line + 4;
+            char b[200];
+
+            while (*arg == ' ')
+                arg++;
+
+            if (!strncmp(arg, "test", 4))
+            {
+                /* synthetic ground truth: fails loudly if any sign, unit or
+                 * frame in attitude6.c is wrong */
+                static char rep[1400];
+                bool ok = attitude6_selftest(rep, sizeof(rep));
+                char *ln = rep;
+                ai_send("@TOOL att-test");
+                while (*ln)
+                {
+                    char *nl = strchr(ln, '\n');
+                    if (nl)
+                        *nl = '\0';
+                    ai_send(ln);
+                    if (!nl)
+                        break;
+                    ln = nl + 1;
+                }
+                snprintf(b, sizeof(b), "self-test %s", ok ? "ALL PASS" : "FAILED");
+            }
+            else if (g_ctx && g_ctx->sensors)
+            {
+                const attitude6_t *at = sensor_get_attitude(g_ctx->sensors);
+                snprintf(b, sizeof(b),
+                         "yaw=%+.1f roll=%+.1f (acc %+.1f) pitch=%+.1f (acc %+.1f) "
+                         "rate=%+.1f dps dt=%.3f n=%lu bias=%d",
+                         at->yaw, at->roll, at->roll_a, at->pitch, at->pitch_a,
+                         at->yaw_rate, at->last_dt, (unsigned long)at->samples,
+                         (int)at->gyro_bias_valid);
+            }
+            else
+                snprintf(b, sizeof(b), "no sensor context");
+
+            ai_send("@TOOL att");
+            ai_send(b);
+            ai_agent_notify("att", b);
         }
         else if (!strncmp(line + 1, "skills", 6))
         {
