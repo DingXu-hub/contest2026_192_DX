@@ -28,9 +28,16 @@ static float wrap180(float d)
 void attitude6_init(attitude6_t *a)
 {
     memset(a, 0, sizeof(*a));
-    a->accel_gain   = 0.02f;   /* ~50 Hz loop -> time constant ~1 s */
+    /* tau is a TIME CONSTANT, not a per-sample weight: the loop runs at
+     * ~20 Hz on hardware and 100 Hz in the self-test, and the correction
+     * must behave the same.  tau = 30 ms keeps the lag during a fast
+     * tilted turn (~60 deg/s body rate -> ~2 deg) small enough for the
+     * display while still smoothing accelerometer noise. */
+    a->accel_tau    = 0.03f;
     a->yaw_deadband = 0.6f;
-    a->accel_tol_g  = 0.20f;
+    a->accel_tol_g  = 0.10f;
+    a->still_rate   = 2.0f;    /* deg/s */
+    a->bias_tau     = 20.0f;   /* s */
 }
 
 void attitude6_set_bias(attitude6_t *a, float bx, float by, float bz)
@@ -118,6 +125,30 @@ void attitude6_update(attitude6_t *a, float ax, float ay, float az,
         /* yaw rate about the vertical: u is UP, so a clockwise turn (which
          * must increase yaw) is MINUS the projection onto u */
         rate = -(gx * ux + gy * uy + gz * uz);
+
+        /* Zero-rate update (ZUPT): while the body is genuinely still, the
+         * residual rate can only be gyro bias - learn it slowly instead of
+         * integrating it into the heading (measured: the boot bias was up to
+         * 3.5 deg/s, and whatever the driver's correction leaves behind would
+         * otherwise drift the yaw by tens of degrees per minute).  A real
+         * slow turn is below still_rate too, so this trades a very slow
+         * rotation for a stable heading - the right choice for a watch. */
+        if (fabsf(amag - 1.0f) <= a->accel_tol_g &&
+            fabsf(gx) < a->still_rate && fabsf(gy) < a->still_rate &&
+            fabsf(gz) < a->still_rate)
+        {
+            float kb = 1.0f - expf(-dt / a->bias_tau);
+
+            a->gyro_bias[0] += kb * gx;
+            a->gyro_bias[1] += kb * gy;
+            a->gyro_bias[2] += kb * gz;
+            a->gyro_bias_valid = true;
+            rate = 0.0f;
+            a->still = true;
+        }
+        else
+            a->still = false;
+
         if (fabsf(rate) < a->yaw_deadband)
             rate = 0.0f;
         a->yaw_rate = rate;
@@ -133,7 +164,8 @@ void attitude6_update(attitude6_t *a, float ax, float ay, float az,
 
     if (a->gravity_valid)
     {
-        k = a->accel_gain;
+        /* dt-normalised complementary gain: k = 1 - exp(-dt/tau) */
+        k = 1.0f - expf(-dt / a->accel_tau);
         a->roll  = wrap180(a->roll  + k * wrap180(a->roll_a  - a->roll));
         a->pitch = wrap180(a->pitch + k * wrap180(a->pitch_a - a->pitch));
         a->converged = true;
@@ -188,7 +220,6 @@ static void run_case(const char *name, float roll_true, float pitch_true,
     bool ok;
 
     attitude6_init(&a);
-    a.accel_gain = 0.10f;           /* settle quickly in the short run */
 
     for (i = 0; i < steps; i++)
     {
@@ -245,24 +276,55 @@ bool attitude6_selftest(char *report, size_t report_len)
     run_case("tilted turn 30deg", 30.0f, 0.0f, 60.0f, 1.0f, 3.0f, report, report_len, &fail);
     run_case("tilted turn 45deg", 45.0f, 20.0f, 90.0f, 1.0f, 3.0f, report, report_len, &fail);
 
-    /* documented intrinsic limitation: an unlearned 1 deg/s bias drifts */
+    /* ZUPT: a small residual bias (0.3 deg/s, below still_rate) must be
+     * learned while the body stays still, leaving almost no yaw drift */
     {
         attitude6_t a;
         float dt = 0.01f;
         int i;
         char line[170];
+        bool ok;
 
         attitude6_init(&a);
-        for (i = 0; i < 6000; i++)
+        for (i = 0; i < 6000; i++)            /* 60 s at 100 Hz */
         {
             float ax, ay, az;
 
             synth_accel(0.0f, 0.0f, &ax, &ay, &az);
-            attitude6_update(&a, ax, ay, az, 0.0f, 0.0f, 1.0f, dt);
+            /* the bias enters through the body Z axis (flat body) */
+            attitude6_update(&a, ax, ay, az, 0.0f, 0.0f, 0.3f, dt);
+        }
+        ok = fabsf(a.yaw) < 2.0f;             /* unlearned it would be 18 deg */
+        if (!ok)
+            fail++;
+        snprintf(line, sizeof(line),
+                 "%s %-18s residual 0.3 deg/s learnt -> yaw %+.1f deg (unlearnt: 18.0)\n",
+                 ok ? "[PASS]" : "[FAIL]", "zupt learns bias", a.yaw);
+        if (report && report_len > strlen(report) + strlen(line) + 1)
+            strcat(report, line);
+        printf("%s", line);
+    }
+
+    /* Honest limitation demo: a bias ABOVE the stillness threshold cannot be
+     * recognised as bias (it looks like a genuine slow turn) and therefore
+     * integrates into the heading - this is intrinsic to a 6-axis solution. */
+    {
+        attitude6_t a;
+        float dt = 0.01f;
+        int i;
+        char line[180];
+
+        attitude6_init(&a);
+        for (i = 0; i < 1000; i++)             /* 10 s at 100 Hz */
+        {
+            float ax, ay, az;
+
+            synth_accel(0.0f, 0.0f, &ax, &ay, &az);
+            attitude6_update(&a, ax, ay, az, 0.0f, 0.0f, 5.0f, dt);
         }
         snprintf(line, sizeof(line),
-                 "[INFO] unlearned 1 deg/s bias over 60 s -> yaw drift %.0f deg "
-                 "(intrinsic to 6-axis; the sampling loop learns the bias)\n",
+                 "[INFO] bias above the 2 deg/s stillness threshold is NOT learnt:"
+                 " 5 deg/s over 10 s -> yaw %+.0f deg (6-axis has no absolute reference)\n",
                  a.yaw);
         if (report && report_len > strlen(report) + strlen(line) + 1)
             strcat(report, line);

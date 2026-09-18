@@ -84,7 +84,7 @@ def main():
     t_start = time.time()
     while time.time() - t_start < secs:
         seq = (seq + 1) & 0xFF
-        paced(ser, frame(1, 1, seq, b'!att'))
+        paced(frame(1, 1, seq, b'!att'))
         buf = b''
         t1 = time.time()
         while time.time() - t1 < 0.5:

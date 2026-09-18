@@ -50,9 +50,11 @@
 
 typedef struct {
     /* configuration */
-    float accel_gain;      /* complementary-filter weight of the gravity fix  */
+    float accel_tau;       /* gravity-fix time constant (s), applied as 1-exp(-dt/tau) */
     float yaw_deadband;    /* deg/s, ignored below this (post-bias noise)     */
     float accel_tol_g;     /* |a| must be within this of 1 g to use gravity   */
+    float still_rate;      /* deg/s: all axes below this counts as stillness  */
+    float bias_tau;        /* s: time constant of the zero-rate bias tracker  */
 
     /* state */
     float roll, pitch, yaw;        /* deg; yaw is relative (-180..180) */
@@ -62,6 +64,7 @@ typedef struct {
     bool  gyro_bias_valid;
     bool  gravity_valid;
     bool  converged;               /* roll/pitch settled after start */
+    bool  still;                   /* body judged stationary this sample */
     uint32_t samples;
     float    last_dt;
 } attitude6_t;

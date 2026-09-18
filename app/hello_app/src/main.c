@@ -1081,7 +1081,7 @@ int main(int argc, char *argv[])
      * serial terminal still works with raw lines */
     console_takeover();
     link_set_text_sink(ai_agent_feed_line);
-    task_create("huangshan_link", 120, 4096, link_task, NULL);
+    task_create("huangshan_link", 120, 8192, link_task, NULL);   /* the AI self-test runs here */
     task_create("huangshan_ai", 120, 6144, ai_task, NULL);
 
 #if APP_DEMO_SEED
