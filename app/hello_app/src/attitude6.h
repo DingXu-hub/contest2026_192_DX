@@ -3,42 +3,19 @@
  *
  * attitude6.h - 6-axis (gyroscope + accelerometer) attitude estimator.
  *
- * WHY THIS EXISTS
- * ---------------
- * The magnetometer path could not be validated on this hardware (hard-iron
- * errors up to 27 uT, a 184 uT desk anomaly, and a 90 deg magnetic error in
- * the fusion).  A 6-axis estimator gives roll/pitch that are correct by
- * construction (gravity is an absolute reference) plus a *relative* yaw
- * integrated from the gyroscope - which is what a wrist device can honestly
- * provide without a trustworthy compass.  This module replaces the 9-axis
- * fusion in the product path.
+ * The attitude math is the official xioTechnologies/Fusion chain - see
+ * attitude6.c for why - wrapped so the rest of the firmware keeps one small
+ * API.  Roll/pitch come from gravity through the library's quaternion
+ * inclination feedback; yaw is a RELATIVE bearing (no magnetometer), which
+ * is what a wrist device can honestly provide.
  *
- * CONVENTIONS (derived from measured hardware behaviour - see the report)
- * ---------------------------------------------------------------------
- * Body frame (the watch frame):
- *     X = 12 o'clock (forward), Y = 3 o'clock (right), Z = into the screen
- * Earth frame: North-East-Down (NED).  yaw = clockwise from the (relative)
- * zero direction, i.e. turning the watch clockwise increases yaw.
- * Inputs:
- *     accelerometer in **g** (|a| = 1.0 at rest)  - proper acceleration
- *     gyroscope in **deg/s**, body frame
- * Measured facts used to pin the signs (do not "fix" them by reasoning):
- *     flat       -> az = -1 g          (a points UP: standard NED model)
- *     12 raised  -> ax > 0             (pitch > 0 = forward tilted up)
- *     right down -> ay < 0             (roll > 0 = right side down)
- * Hence:
- *     pitch = atan2(ax, sqrt(ay^2 + az^2))
- *     roll  = atan2(-ay, -az)
- *     yaw  += -(gx*ux + gy*uy + gz*uz) * dt      with u = a/|a| (up)
- * (the minus sign is what makes a clockwise turn increase yaw; projecting
- * onto gravity instead of raw Z rejects wrist swing around the forearm)
- *
- * SELF-TEST
- * ---------
- * attitude6_selftest() feeds synthetic samples generated from a KNOWN
- * attitude and checks the estimator recovers it.  It runs on the device
- * (`!att test`), so any sign/unit/frame mistake shows up as FAIL instead of
- * being argued about.
+ * CONVENTIONS (pinned to measured hardware behaviour)
+ * --------------------------------------------------
+ * Body frame: X = 12 o'clock, Y = 3 o'clock, Z = into the screen.
+ * Earth frame: North-East-Down; yaw increases clockwise.
+ * Inputs: accelerometer in **g** (flat reads (0,0,-1) g, 12 raised gives
+ * ax > 0, right side down gives ay < 0) and gyroscope in **deg/s**.
+ * The synthetic self-test (`!att test`) verifies every one of these.
  */
 
 #ifndef __ATTITUDE6_H
@@ -48,25 +25,31 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-typedef struct {
-    /* configuration */
-    float accel_tau;       /* gravity-fix time constant (s), applied as 1-exp(-dt/tau) */
-    float yaw_deadband;    /* deg/s, ignored below this (post-bias noise)     */
-    float accel_tol_g;     /* |a| must be within this of 1 g to use gravity   */
-    float still_rate;      /* deg/s: all axes below this counts as stillness  */
-    float bias_tau;        /* s: time constant of the zero-rate bias tracker  */
+#include "fusion/Fusion.h"
 
-    /* state */
-    float roll, pitch, yaw;        /* deg; yaw is relative (-180..180) */
-    float roll_a, pitch_a;         /* accel-only reference (deg), for checks */
-    float yaw_rate;                /* gravity-projected rate (deg/s) */
-    float gyro_bias[3];            /* deg/s, body frame, learned while still */
+typedef struct {
+    /* official chain */
+    FusionBias bias;              /* still-gated gyro offset              */
+    FusionAhrs ahrs;              /* quaternion attitude, no magnetometer */
+
+    /* input conditioning (the one documented deviation) */
+    bool     spike_enabled;
+    float    spike_ratio;         /* reject |gyro| > ratio*avg + floor    */
+    float    spike_floor;         /* deg/s                                */
+    float    gyro_mag_avg;
+    uint32_t spikes;
+    uint8_t  spike_run;           /* consecutive over-threshold samples    */
+
+    /* outputs */
+    float roll, pitch, yaw;       /* deg (yaw relative, -180..180)        */
+    float roll_a, pitch_a;        /* accel-only reference for checks      */
+    float yaw_rate;               /* gravity-projected rate, deg/s        */
+    float gyro_bias[3];           /* official offset estimate, deg/s      */
+    float dbg_gyro[3];            /* last corrected gyro (diagnostics)    */
+    float dbg_acc[3];             /* last accelerometer (diagnostics)     */
     bool  gyro_bias_valid;
-    bool  gravity_valid;
-    bool  converged;               /* roll/pitch settled after start */
-    bool  still;                   /* body judged stationary this sample */
-    float gyro_mag_avg;            /* EMA of |gyro|, used for spike rejection */
-    uint32_t spikes;               /* samples rejected as spikes */
+    bool  converged;
+    bool  still;
     uint32_t samples;
     float    last_dt;
 } attitude6_t;
@@ -80,16 +63,16 @@ void  attitude6_update(attitude6_t *a, float ax, float ay, float az,
 /* make the current heading the new zero (relative-bearing use case) */
 void  attitude6_zero_yaw(attitude6_t *a);
 
-/* re-learn the gyro bias from a short still window (done by the caller's
- * sampling loop; this only stores the result) */
+/* pre-load a gyro offset (e.g. from a boot-time stillness calibration) */
 void  attitude6_set_bias(attitude6_t *a, float bx, float by, float bz);
 
 /* estimate the gyro bias from a buffer of still samples (deg/s) */
 bool  attitude6_estimate_bias(const float *gx, const float *gy, const float *gz,
                               int n, float *bx, float *by, float *bz);
 
-/* synthetic ground-truth test; writes a short report, returns true if all
- * cases pass.  Safe to call at runtime (uses a local estimator instance). */
+/* synthetic ground-truth test through the official chain; writes a short
+ * report and returns true when every case passes.  Run on the device with
+ * `!att test`. */
 bool  attitude6_selftest(char *report, size_t report_len);
 
 #endif /* __ATTITUDE6_H */

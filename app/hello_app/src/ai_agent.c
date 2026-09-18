@@ -396,10 +396,11 @@ static void handle_line(char *line)
                 const attitude6_t *at = sensor_get_attitude(g_ctx->sensors);
                 snprintf(b, sizeof(b),
                          "yaw=%+.1f roll=%+.1f (acc %+.1f) pitch=%+.1f (acc %+.1f) "
-                         "rate=%+.1f dps dt=%.3f n=%lu bias=%d",
+                         "rate=%+.1f dps dt=%.3f n=%lu bias=%d spike=%lu "
+                         "(glitches rejected by the input stage)",
                          at->yaw, at->roll, at->roll_a, at->pitch, at->pitch_a,
                          at->yaw_rate, at->last_dt, (unsigned long)at->samples,
-                         (int)at->gyro_bias_valid);
+                         (int)at->gyro_bias_valid, (unsigned long)at->spikes);
             }
             else
                 snprintf(b, sizeof(b), "no sensor context");

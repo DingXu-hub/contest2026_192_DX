@@ -1,0 +1,26 @@
+app ready: True
+   | ?UZ?
+   | [PASS] flat               roll    +0.0 /    +0.0
+   | [PASS] roll right 30      roll   +30.0 /   +30.0
+   | [PASS] roll left 45       roll   -45.0 /   -45.0
+   | [PASS] pitch up 40        roll    +0.0 /    +0.0
+   | [PASS] roll+pitch         roll   +20.0 /   +20.0
+   | [PASS] yaw +90 @60dps     roll    +0.0 /    +0.0
+   | [PASS] yaw -90 @-60dps    roll    +0.0 /    +0.0
+   | [PASS] tilted turn 30deg  roll   +30.0 /   +30.0
+   | [PASS] spike rejection    30 dps spike every 2 s -> yaw +0.00 deg, 28 rejected
+   | [INFO] attitude6 self-test: ALL PASS (0 case(s) failed)
+   | @TOOL att-test
+   | [PASS] flat               roll    +0.0 /    +0.0
+   | [PASS] roll right 30      roll   +30.0 /   +30.0
+   | [PASS] roll left 45       roll   -45.0 /   -45.0
+   | [PASS] pitch up 40        roll    +0.0 /    +0.0
+   | [PASS] roll+pitch         roll   +20.0 /   +20.0
+   | [PASS] yaw +90 @60dps     roll    +0.0 /    +0.0
+   | [PASS] yaw -90 @-60dps    roll    +0.0 /    +0.0
+   | [PASS] tilted turn 30deg  roll   +30.0 /   +30.0
+   | [PASS] spike rejection    30 dps spike every 2 s -> yaw +0.00 deg, 28 rejected
+   | @TOOL att
+   | self-test ALL PASS
+   | [0m[LCD] setpower=1
+   | [0m[IMU] gyro bias=(-1.39,3.43,0.26) deg/s (n=81)

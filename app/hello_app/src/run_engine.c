@@ -201,11 +201,23 @@ void run_tick(run_engine_t *re, uint32_t now_ms, float accel_mag,
      * heading (keeps a straight line straight) */
     if (dt > 0)
     {
+        /* The rate comes from the 6-axis estimator (attitude6.c): already
+         * gravity-projected (so wrist roll during the arm swing does not
+         * leak in), spike-filtered and zeroed while still.  It is the same
+         * value the compass capsule shows, which matters because the route
+         * and the bearing must agree. */
         float accum = gyro_z * (float)dt / 1000.0f;
         re->turn_accum += accum;
-        if (re->turn_accum > 4.0f || re->turn_accum < -4.0f)
+        /* 4 deg -> 1 deg: a real route is a sequence of gentle bearing
+         * changes, and a coarse deadband turned them into a staircase (and
+         * made the trail look like a straight line).  attitude6's own
+         * +-0.6 deg/s deadband already suppresses the sensor noise, so this
+         * only has to stop float dust from accumulating while still. */
+        if (re->turn_accum > 1.0f || re->turn_accum < -1.0f)
         {
-            re->heading_deg -= re->turn_accum;
+            /* attitude6 yaw is clockwise-positive in the same convention
+             * as this bearing (north = 0, clockwise positive) */
+            re->heading_deg += re->turn_accum;
             re->turn_accum = 0.0f;
             while (re->heading_deg >= 360.0f)
                 re->heading_deg -= 360.0f;
@@ -214,9 +226,9 @@ void run_tick(run_engine_t *re, uint32_t now_ms, float accel_mag,
         }
         else if (now_ms - re->last_step_ms > 1500 && re->steps > 0)
         {
-            /* standing still: decay the pending turn slowly so a real
-             * turn made while pausing still registers eventually */
-            re->turn_accum *= 0.92f;
+            /* standing still: keep the pending turn instead of throwing it
+             * away (a turn made while pausing is still a turn) */
+            re->turn_accum *= 0.98f;
         }
     }
 

@@ -291,7 +291,12 @@ static void start_run(app_ctx_t *ctx)
     run_start(&ctx->run);
     if (ctx->sensors)
     {
-        float h = sensor_get_heading(ctx->sensors) + ctx->decl_deg;
+        /* 6-axis attitude: the bearing is RELATIVE to wherever the watch
+         * pointed when the run started (there is no magnetometer in the
+         * heading path), so the trail is anchored at the estimator's own
+         * yaw - not at a magnetic north that this hardware cannot supply. */
+        const attitude6_t *at = sensor_get_attitude(ctx->sensors);
+        float h = at ? at->yaw : 0.0f;
         ctx->run.heading_deg = h;
         while (ctx->run.heading_deg >= 360.0f)
             ctx->run.heading_deg -= 360.0f;
@@ -1427,7 +1432,14 @@ void page_tick(app_ctx_t *ctx, uint32_t now_ms)
                    ctx->sensors->imu.ay * ctx->sensors->imu.ay +
                    ctx->sensors->imu.az * ctx->sensors->imu.az;
             amag = sqrtf(amag);
-            gz = ctx->sensors->gyro_yaw_rate;
+            /* bearing source: the 6-axis estimator's gravity-projected yaw
+             * rate (spike-filtered, zeroed while still) rather than the
+             * legacy single-axis field, so the dead-reckoned route curves
+             * with the runner's real turns */
+            {
+                const attitude6_t *at = sensor_get_attitude(ctx->sensors);
+                gz = at ? at->yaw_rate : ctx->sensors->gyro_yaw_rate;
+            }
         }
 #ifdef CONFIG_ARCH_SIM
         if (ctx->run.running_ms > 8000 && ctx->run.running_ms < 20000)

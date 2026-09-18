@@ -20,6 +20,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <unistd.h>
 #include <sched.h>
@@ -1105,6 +1106,64 @@ int main(int argc, char *argv[])
             kv_history_push(demo[di].m, demo[di].s, demo[di].asc);
         printf("[App] demo seed: %d runs in the history\n",
                kv_history_count());
+
+        /* Give the map page a route with the shape a real run produces: a
+         * closed loop, because a dead-reckoned trail is only a straight line
+         * when nothing is steered.  Live runs always use the real trail from
+         * run_engine.c; this is DEMO DATA for screenshots (see
+         * docs/交接文档.md). */
+        {
+            enum { DEMO_TRACK_N = 150 };
+            float px = 0.0f, py = 0.0f, dist = 0.0f;
+            int i;
+
+            g_app.run.track_count = 0;
+            for (i = 0; i < DEMO_TRACK_N; i++)
+            {
+                float t = (float)i / (float)(DEMO_TRACK_N - 1);
+                float a = t * 6.2831853f;
+                /* ellipse + harmonics: a loop, not a perfect Oval */
+                float x = 620.0f * cosf(a) + 55.0f * cosf(3.0f * a);
+                float y = 430.0f * sinf(a) + 40.0f * sinf(2.0f * a);
+                run_track_point_t *tp = &g_app.run.track[i];
+
+                if (i > 0)
+                    dist += sqrtf((x - px) * (x - px) + (y - py) * (y - py));
+                px = x;
+                py = y;
+
+                tp->x = x;
+                tp->y = y;
+                tp->pace_s_per_km = 320.0f + 45.0f * sinf(2.5f * a);
+                tp->heading_deg = 0.0f;
+                g_app.run.track_count++;
+            }
+            /* bearing of each point = direction to the next one (north = 0,
+             * clockwise positive), the same convention run_engine uses */
+            for (i = 0; i + 1 < g_app.run.track_count; i++)
+            {
+                float dx = g_app.run.track[i + 1].x - g_app.run.track[i].x;
+                float dy = g_app.run.track[i + 1].y - g_app.run.track[i].y;
+                float b = atan2f(dx, dy) * 57.2957795f;
+                g_app.run.track[i].heading_deg = b < 0.0f ? b + 360.0f : b;
+            }
+            g_app.run.track[g_app.run.track_count - 1].heading_deg =
+                g_app.run.track[g_app.run.track_count - 2].heading_deg;
+
+            g_app.run.state = RUN_FINISHED;
+            g_app.run.distance_m = dist;
+            g_app.run.running_ms = (uint32_t)(dist / 2.65f * 1000.0f);
+            g_app.run.steps = (uint32_t)(dist / 0.75f);
+            g_app.run.cadence_spm = 168.0f;
+            g_app.run.avg_pace_s_per_km = 265.0f;
+            g_app.run.pace_s_per_km = 265.0f;
+            g_app.run.pos_x = px;
+            g_app.run.pos_y = py;
+            g_app.run.heading_deg = g_app.run.track[0].heading_deg;
+            g_app.run_saved = true;      /* do not push the demo into history */
+            printf("[App] demo track: %d points, %.0f m loop\n",
+                   g_app.run.track_count, (double)dist);
+        }
         page_set(&g_app, PAGE_STATS);
     }
 #endif
