@@ -571,6 +571,8 @@ static void handle_line(char *line)
             else if (!strncmp(arg, "prc", 3))
             {
                 mic_cfg_t cfg;
+
+                ai_send("@TOOL micprc");
                 uint32_t n, irqs, cndtr;
                 int32_t peak, rms;
 
@@ -583,10 +585,17 @@ static void handle_line(char *line)
                 {
                     usleep(200000);
                     mic_prc_stats(&n, &peak, &rms, &irqs, &cndtr);
-                    snprintf(b, sizeof(b),
-                             "audprc: samples=%lu peak=%ld rms=%ld irqs=%lu cndtr=%lu",
-                             (unsigned long)n, (long)peak, (long)rms,
-                             (unsigned long)irqs, (unsigned long)cndtr);
+                    {
+                        int nz; int32_t pk2, f, l;
+
+                        mic_prc_peek(&nz, &pk2, &f, &l);
+                        snprintf(b, sizeof(b),
+                                 "audprc: samples=%lu irqs=%lu cndtr=%lu | buf nz=%d "
+                                 "peak=%ld first=%ld last=%ld",
+                                 (unsigned long)n, (unsigned long)irqs,
+                                 (unsigned long)cndtr, nz, (long)pk2, (long)f,
+                                 (long)l);
+                    }
                 }
             }
             else if (!strncmp(arg, "pllstart", 8))

@@ -39,10 +39,11 @@
 #include <unistd.h>
 
 /* DMA wiring for AUDPRC RX0, copied from the vendor header
- * chips/boards/include/config/sf32lb52x/dma_config.h */
-#define MIC_PRC_DMA_INSTANCE   AUDPRC_RX0_DMA_INSTANCE   /* DMA1_Channel4   */
-#define MIC_PRC_DMA_REQUEST    AUDPRC_RX0_DMA_REQUEST    /* DMA_REQUEST_53  */
-#define MIC_PRC_DMA_IRQ        AUDPRC_RX0_DMA_IRQ        /* DMAC1_CH4_IRQn  */
+ * chips/boards/include/config/sf32lb52x/dma_config.h (the app does not get that
+ * include path, so the values are written out as our AUDCODEC driver does) */
+#define MIC_PRC_DMA_INSTANCE   DMA1_Channel4      /* AUDPRC_RX0_DMA_INSTANCE */
+#define MIC_PRC_DMA_REQUEST    DMA_REQUEST_53     /* AUDPRC_RX0_DMA_REQUEST  */
+#define MIC_PRC_DMA_IRQ        DMAC1_CH4_IRQn     /* AUDPRC_RX0_DMA_IRQ      */
 
 #define MIC_PRC_BUF_SAMPLES    1024
 #define MIC_PRC_RING_SAMPLES   8192
@@ -129,7 +130,15 @@ bool mic_prc_start(int src_sel)
     /* 1) un-gate and reset the audio processor (the codec itself is brought up
      *    by mic_start(), which the caller runs first) */
     HAL_RCC_EnableModule(RCC_MOD_AUDPRC);
+    printf("[MicPRC] after RCC: ID=%08lx CFG=%08lx RX0_CFG=%08lx STB=%08lx",
+           (unsigned long)hwp_audprc->ID, (unsigned long)hwp_audprc->CFG,
+           (unsigned long)hwp_audprc->RX_CH0_CFG,
+           (unsigned long)hwp_audprc->STB);
+    puts("");
+
     HAL_RCC_ResetModule(RCC_MOD_AUDPRC);
+    printf("[MicPRC] after reset: CFG=%08lx", (unsigned long)hwp_audprc->CFG);
+    puts("");
 
     /* 2) DMA handle for the RX0 channel */
     memset(&s_dma, 0, sizeof(s_dma));
@@ -144,6 +153,8 @@ bool mic_prc_start(int src_sel)
         puts("[MicPRC] HAL_AUDPRC_Init failed");
         return false;
     }
+    printf("[MicPRC] Init ok: CFG=%08lx", (unsigned long)hwp_audprc->CFG);
+    puts("");
 
     /* 3) ADC path: route the codec ADC in, 0 dB, no loopback / swap */
     memset(&cfg, 0, sizeof(cfg));
@@ -158,10 +169,15 @@ bool mic_prc_start(int src_sel)
         puts("[MicPRC] Config_ADCPath failed");
         return false;
     }
+    printf("[MicPRC] ADCPath ok: ADC_PATH_CFG0=%08lx",
+           (unsigned long)hwp_audprc->ADC_PATH_CFG0);
+    puts("");
 
     /* 4) power the processor and its ADC path on */
     __HAL_AUDPRC_ENABLE(&s_prc);
     __HAL_AUDPRC_ADCPATH_ENABLE(&s_prc);
+    printf("[MicPRC] enabled: CFG=%08lx", (unsigned long)hwp_audprc->CFG);
+    puts("");
 
     /* 5) circular DMA out of the RX_CH0 FIFO */
     if (HAL_AUDPRC_Receive_DMA(&s_prc, (uint8_t *)s_buf,
@@ -222,6 +238,34 @@ void mic_prc_stats(uint32_t *samples, int32_t *peak, int32_t *rms,
         *cndtr = (uint32_t)s_dma.Instance->CNDTR;
 }
 
+/* Read the raw DMA buffer directly - independent of the DMA interrupt, so this
+ * distinguishes "the transfer runs but our IRQ is not wired" from "no data". */
+void mic_prc_peek(int *nonzero, int32_t *peak, int32_t *first, int32_t *last)
+{
+    int i;
+    int nz = 0;
+    int32_t pk = 0;
+
+    for (i = 0; i < MIC_PRC_BUF_SAMPLES; i++)
+    {
+        int32_t v = s_buf[i];
+        int32_t a = v < 0 ? -v : v;
+
+        if (v != 0)
+            nz++;
+        if (a > pk)
+            pk = a;
+    }
+    if (nonzero)
+        *nonzero = nz;
+    if (peak)
+        *peak = pk;
+    if (first)
+        *first = s_buf[0];
+    if (last)
+        *last = s_buf[MIC_PRC_BUF_SAMPLES - 1];
+}
+
 int mic_prc_read(int16_t *out, int max_samples)
 {
     int n = 0;
@@ -263,8 +307,16 @@ void mic_prc_sweep(void)
                (unsigned long)s_irqs, (unsigned long)n0,
                (unsigned long)s_stats_n);
         puts("");
-        if (c1 != c0 || s_stats_n != n0 || s_irqs != i0)
-            hits++;
+        {
+            int nz;
+            int32_t pk;
+
+            mic_prc_peek(&nz, &pk, NULL, NULL);
+            printf("[MicPRCSWEEP]   buf nonzero=%d peak=%ld", nz, (long)pk);
+            puts("");
+            if (nz > 0 || pk > 0 || c1 != c0 || s_stats_n != n0 || s_irqs != i0)
+                hits++;
+        }
         mic_prc_stop();
     }
     printf("[MicPRCSWEEP] %d source selectors tried, %d produced data", 4, hits);

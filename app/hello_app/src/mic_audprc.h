@@ -25,6 +25,9 @@ void mic_prc_stats(uint32_t *samples, int32_t *peak, int32_t *rms,
                    uint32_t *irqs, uint32_t *cndtr);
 int  mic_prc_read(int16_t *out, int max_samples);
 
+/* raw DMA buffer inspection, independent of the interrupt path */
+void mic_prc_peek(int *nonzero, int32_t *peak, int32_t *first, int32_t *last);
+
 /* Try every ADC source selector and report which produces data */
 void mic_prc_sweep(void);
 
