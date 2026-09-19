@@ -58,6 +58,8 @@ static volatile int64_t      s_stats_sumsq;
 static volatile uint32_t     s_irqs;
 static bool                   s_running;
 static int                    s_src_sel;
+static uint32_t               s_poll_word;   /* words consumed by the poller */
+static bool                   s_poll_init;
 
 static AUDPRC_HandleTypeDef  s_prc;
 static DMA_HandleTypeDef     s_dma;
@@ -214,6 +216,8 @@ bool mic_prc_start(int src_sel)
     s_stats_peak = 0;
     s_stats_sumsq = 0;
     s_irqs = 0;
+    s_poll_word = 0;
+    s_poll_init = false;
     s_running = true;
 
     printf("[MicPRC] started: src_sel=%d CFG=%08lx ADC_PATH=%08lx RX0_CFG=%08lx",
@@ -222,6 +226,42 @@ bool mic_prc_start(int src_sel)
            (unsigned long)hwp_audprc->RX_CH0_CFG);
     puts("");
     return true;
+}
+
+/* Poll-based intake - deliberately independent of the DMA interrupt.
+ *
+ * The DMA keeps writing the circular buffer; the poller watches CNDTR (which
+ * counts WORD transfers, two int16 samples each) to see how much is new and
+ * copies it into the ring.  This is what lets capture work at all while the
+ * interrupt wiring is unsolved: HAL_NVIC_EnableIRQ() is a raw CMSIS call, so
+ * NuttX reports the channel's IRQ 66 as unexpected and no callback runs.  At
+ * 16 kHz a 1024-sample buffer lasts 64 ms, so polling every 20 ms is safe. */
+void mic_prc_poll(void)
+{
+    uint32_t words;
+    uint32_t done;
+
+    if (!s_running)
+        return;
+
+    /* words still to transfer; the buffer holds MIC_PRC_BUF_SAMPLES/2 words */
+    done = (MIC_PRC_BUF_SAMPLES / 2) - s_dma.Instance->CNDTR;
+
+    if (!s_poll_init)
+    {
+        s_poll_word = done;
+        s_poll_init = true;
+        return;
+    }
+
+    words = done - s_poll_word;          /* new words since the last poll */
+    words %= (MIC_PRC_BUF_SAMPLES / 2);
+
+    while (words--)
+    {
+        publish(&s_buf[2 * s_poll_word], 2);
+        s_poll_word = (s_poll_word + 1) % (MIC_PRC_BUF_SAMPLES / 2);
+    }
 }
 
 void mic_prc_stop(void)

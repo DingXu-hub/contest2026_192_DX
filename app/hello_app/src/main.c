@@ -43,6 +43,7 @@
 #include "ai_agent.h"
 #include "link.h"
 #include "app_diag.h"
+#include "mic_audprc.h"
 #include "devshot.h"
 #include "sensor_manager.h"
 #include "power_manager.h"
@@ -1189,6 +1190,15 @@ int main(int argc, char *argv[])
     uint32_t touch_check_ms = 0;
     while (g_running)
     {
+        /* poll-based audio capture: no interrupt involvement, so a 20 ms
+         * granularity keeps up with the 64 ms DMA buffer while recording */
+        if (mic_prc_running())
+        {
+            usleep(20000);
+            mic_prc_poll();
+            continue;
+        }
+
         sleep(1);
 
         /* immediate touch detection: report the instant the FT6146

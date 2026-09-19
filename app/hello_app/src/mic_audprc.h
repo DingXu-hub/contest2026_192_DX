@@ -31,4 +31,10 @@ void mic_prc_peek(int *nonzero, int32_t *peak, int32_t *first, int32_t *last);
 /* Try every ADC source selector and report which produces data */
 void mic_prc_sweep(void);
 
+/* poll the DMA buffer (no interrupt involved); call often while running */
+void mic_prc_poll(void);
+
+/* sweep the ADC/audio clock dividers the HAL writes (we had them at zero) */
+void mic_prc_sweep_div(void);
+
 #endif /* __MIC_AUDPRC_H */
