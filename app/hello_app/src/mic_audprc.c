@@ -190,6 +190,15 @@ bool mic_prc_start(int src_sel)
     irq_attach(MIC_PRC_DMA_IRQ, mic_prc_dma_irq, NULL);
     up_enable_irq(MIC_PRC_DMA_IRQ);
 
+    /* HAL_DMA_Start_IT() did not leave the completion interrupts enabled in the
+     * measured CCR, so set them explicitly: without TCIE/HTIE the transfer runs
+     * but no callback ever fires (which is exactly what irqs=0 showed). */
+    s_dma.Instance->CCR |= (1u << 1) | (1u << 2);
+    printf("[MicPRC] dma CCR=%08lx CNDTR=%lu\n",
+           (unsigned long)s_dma.Instance->CCR,
+           (unsigned long)s_dma.Instance->CNDTR);
+    usleep(20000);
+
     s_ring_w = s_ring_r = 0;
     s_stats_n = 0;
     s_stats_peak = 0;
@@ -310,13 +319,13 @@ void mic_prc_sweep(void)
             usleep(10000);
 
         mic_prc_peek(&nz, &pk, NULL, NULL);
-        printf("[MicPRCSWEEP] src=%d fmt=%d mode=%d -> RX_CFG=%08lx CCR=%08lx "
-               "CNDTR=%lu nz=%d peak=%ld irqs=%lu",
+        printf("[MicPRCSWEEP] src=%d fmt=%d mode=%d RX_CFG=%08lx CCR=%08lx "
+               "CNDTR=%lu nz=%d peak=%ld irqs=%lu\n",
                src, fmt, mode, (unsigned long)hwp_audprc->RX_CH0_CFG,
                (unsigned long)s_dma.Instance->CCR,
                (unsigned long)s_dma.Instance->CNDTR, nz, (long)pk,
                (unsigned long)s_irqs);
-        puts("");
+        usleep(40000);
         if (nz > 0 || pk > 0)
             hits++;
         mic_prc_stop();
