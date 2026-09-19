@@ -384,3 +384,64 @@ void mic_prc_sweep(void)
     printf("[MicPRCSWEEP] %d combinations, %d produced non-zero data", tried, hits);
     puts("");
 }
+
+/* Microphone-bias sweep, driven by the module datasheet: MIC_BIAS is a
+ * programmable LDO (1.4-2.8 V) whose level lives in BG_CFG0.MIC_VREF_SEL, with
+ * ADC_ANA_CFG.CAPCODE choosing the bias decoupling capacitor and
+ * BG_CFG0.EN_AMP the microphone amplifier.  Our firmware only ever enabled
+ * those blocks and never picked a level, so walk the levels while the AUDPRC
+ * capture path runs and judge by the raw DMA buffer (no interrupts involved). */
+void mic_prc_sweep_bias(void)
+{
+    static const uint8_t vrefs[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    static const uint8_t caps[]  = {3, 8, 16, 31};
+    static const uint8_t amps[]  = {0, 1};
+    unsigned v, c, a;
+    int hits = 0;
+    int tried = 0;
+
+    for (v = 0; v < sizeof(vrefs); v++)
+    for (c = 0; c < sizeof(caps); c++)
+    for (a = 0; a < sizeof(amps); a++)
+    {
+        int nz = 0;
+        int32_t pk = 0;
+        int i;
+
+        hwp_audcodec->BG_CFG0 = (hwp_audcodec->BG_CFG0 &
+                                 ~AUDCODEC_BG_CFG0_MIC_VREF_SEL_Msk) |
+                                ((uint32_t)vrefs[v]
+                                 << AUDCODEC_BG_CFG0_MIC_VREF_SEL_Pos);
+        if (amps[a])
+            hwp_audcodec->BG_CFG0 |= AUDCODEC_BG_CFG0_EN_AMP;
+        else
+            hwp_audcodec->BG_CFG0 &= ~AUDCODEC_BG_CFG0_EN_AMP;
+        hwp_audcodec->ADC_ANA_CFG = (hwp_audcodec->ADC_ANA_CFG &
+                                     ~AUDCODEC_ADC_ANA_CFG_CAPCODE_Msk) |
+                                    ((uint32_t)caps[c]
+                                     << AUDCODEC_ADC_ANA_CFG_CAPCODE_Pos) |
+                                    AUDCODEC_ADC_ANA_CFG_MICBIAS_EN;
+
+        if (!mic_prc_start(0))
+        {
+            printf("[MicBIAS] vref=%u cap=%u amp=%u START FAILED\n",
+                   vrefs[v], caps[c], amps[a]);
+            usleep(30000);
+            continue;
+        }
+        for (i = 0; i < 8; i++)
+            usleep(10000);
+        mic_prc_peek(&nz, &pk, NULL, NULL);
+        printf("[MicBIAS] vref=%u cap=%u amp=%u BG0=%08lx ANA=%08lx nz=%d peak=%ld\n",
+               vrefs[v], caps[c], amps[a],
+               (unsigned long)hwp_audcodec->BG_CFG0,
+               (unsigned long)hwp_audcodec->ADC_ANA_CFG, nz, (long)pk);
+        usleep(30000);
+        if (nz > 0 || pk > 0)
+            hits++;
+        mic_prc_stop();
+        tried++;
+    }
+    printf("[MicBIAS] %d combinations, %d produced non-zero data\n", tried, hits);
+    usleep(30000);
+}

@@ -34,6 +34,9 @@ void mic_prc_sweep(void);
 /* poll the DMA buffer (no interrupt involved); call often while running */
 void mic_prc_poll(void);
 
+/* sweep the microphone bias level / cap code / amplifier bits */
+void mic_prc_sweep_bias(void);
+
 /* sweep the ADC/audio clock dividers the HAL writes (we had them at zero) */
 void mic_prc_sweep_div(void);
 

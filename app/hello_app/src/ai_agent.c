@@ -528,6 +528,7 @@ static void handle_line(char *line)
             else if (!strncmp(arg, "ch0", 3) || !strncmp(arg, "ch1", 3))
             {
                 mic_cfg_t cfg;
+                mic_set_skip_channel(false);
                 mic_cfg_default(&cfg);
                 cfg.channel = (arg[2] == '1') ? 1 : 0;
                 if (mic_start(&cfg))
@@ -557,6 +558,17 @@ static void handle_line(char *line)
                              r == 1 ? "SAMPLES" : (r == 0 ? "no data"
                                                           : "start failed"));
                 }
+            }
+            else if (!strncmp(arg, "prcbias", 7))
+            {
+                mic_set_skip_channel(true);
+                if (g_ctx && g_ctx->pm)
+                {
+                    pm_report_activity(g_ctx->pm);
+                    pm_enter_active(g_ctx->pm);
+                }
+                mic_prc_sweep_bias();
+                snprintf(b, sizeof(b), "prcbias done (see [MicBIAS])");
             }
             else if (!strncmp(arg, "prcsweep", 8))
             {
