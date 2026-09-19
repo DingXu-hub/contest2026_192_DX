@@ -148,6 +148,16 @@ bool mic_prc_start(int src_sel)
     s_prc.Instance     = hwp_audprc;
     s_prc.hdma[HAL_AUDPRC_RX_CH0] = &s_dma;
 
+    /* HAL_AUDPRC_Init() writes Init.clk_div into CFG.AUDCLK_DIV and
+     * Init.adc_div/dac_div into STB.  A memset handle leaves all three at
+     * zero - i.e. an ADC clock divider of zero - which is the prime suspect
+     * for the "one short burst of zeros then nothing" we measured.
+     * 48 MHz / 16 kHz = 3000 as a first rational guess. */
+    s_prc.Init.clk_div = 1;
+    s_prc.Init.adc_div = 3000;
+    s_prc.Init.dac_div = 3000;
+    s_prc.Init.clk_sel = 0;   /* 0: xtal 48M, 1: PLL 44.1M */
+
     if (HAL_AUDPRC_Init(&s_prc) != HAL_OK)
     {
         puts("[MicPRC] HAL_AUDPRC_Init failed");
