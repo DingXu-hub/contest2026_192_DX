@@ -419,6 +419,33 @@ static void handle_line(char *line)
                 ai_agent_notify("tool", "no gateway: run tools/gateway.py");
             }
         }
+        else if (!strncmp(line + 1, "page", 4))
+        {
+            /* Terminal-driven page switching: the board's user key is not
+             * readable on this unit (five read methods, all constant) and the
+             * touch pad scroll/flick gestures never reach the page layer, so
+             * the same serial channel that carries the AI commands also drives
+             * the pages: !page next | !page prev | !page 0..5 */
+            const char *arg = line + 5;
+            int pg;
+
+            while (*arg == ' ')
+                arg++;
+
+            if (!strncmp(arg, "next", 4))
+                pg = (int)g_ctx->ui.current + 1;
+            else if (!strncmp(arg, "prev", 4))
+                pg = (int)g_ctx->ui.current - 1;
+            else
+                pg = (int)strtol(arg, NULL, 10);
+
+            if (pg >= (int)PAGE_COUNT)
+                pg = 0;
+            if (pg < 0)
+                pg = (int)PAGE_COUNT - 1;
+
+            page_set(g_ctx, (page_id_t)pg);
+        }
         else if (!strncmp(line + 1, "att", 3))
         {
             const char *arg = line + 4;

@@ -68,6 +68,12 @@ static AUDCODEC_HandleTypeDef  s_codec;
 static DMA_HandleTypeDef       s_dma;
 static AUDCODE_ADC_CLK_CONFIG_TYPE s_adc_clk;
 static mic_cfg_t               s_cfg;
+
+/* When AUDPRC consumes the codec ADC directly, the codec's OWN channel (FIFO +
+ * DMA) must stay disabled - the ADC output can only be routed one way, and our
+ * earlier attempts always armed the FIFO path (which is also why the samples
+ * never appeared in AUDPRC). */
+static bool                    s_skip_channel;
 static volatile bool           s_running;
 static volatile uint32_t       s_half_irqs;
 static void (*s_activity)(void);   /* keep-awake hook (power manager) */
@@ -182,6 +188,11 @@ int MIC_DMA_IRQ_NAME(int irq, void *context, void *arg)
 
 /* ---------------- start / stop ---------------- */
 
+void mic_set_skip_channel(bool skip)
+{
+    s_skip_channel = skip;
+}
+
 bool mic_start(const mic_cfg_t *cfg)
 {
     if (cfg)
@@ -206,9 +217,11 @@ bool mic_start(const mic_cfg_t *cfg)
 #endif
     HAL_RCC_EnableModule(RCC_MOD_DMAC1);
 
-    /* the mic input is the codec's analogue pin: park the digital driver
-     * (the reference board does the same: "PAD_PA09 ... share with MIC") */
-    HAL_PIN_Set(PAD_PA09, GPIO_A9, PIN_NOPULL, 1);
+    /* NOTE: PAD_PA09 is the TOUCH RESET (CTP_RESET) on this board - it must NOT
+     * be touched here.  An earlier version re-configured it as a GPIO input
+     * (copied from a reference board where PA09 shares the mic), which left the
+     * touch controller reset floating and made input die.  The mic's analogue
+     * pins on this board are MIC_BIAS(36)/MIC_ADC_IN(37) and need no pinmux. */
 
     /* The audio crystal buffer has a DRIVE STRENGTH field (PMUC_HXT_CR1.
      * BUF_AUD_STR) that the vendor HAL never touches - bf0_enable_pll() only
@@ -278,10 +291,11 @@ bool mic_start(const mic_cfg_t *cfg)
     s_half_irqs = 0;
 
     /* reset the ADC path first (the vendor sequence does this before
-     * configuring a channel) */
+     * configuring a channel) - skipped when AUDPRC is the consumer */
+    if (!s_skip_channel)
     HAL_AUDCODEC_Clear_All_Channel(&s_codec, 0x2);
 
-    if (HAL_AUDCODEC_Config_RChanel(&s_codec, s_cfg.channel,
+    if (!s_skip_channel && HAL_AUDCODEC_Config_RChanel(&s_codec, s_cfg.channel,
                                     &s_codec.Init.adc_cfg) != HAL_OK)
     {
         printf("[Mic] Config_RChanel failed\n");
@@ -309,7 +323,7 @@ bool mic_start(const mic_cfg_t *cfg)
         printf("[Mic] vendor-style CFG write = %08lx\n", (unsigned long)value);
     }
 
-    if (HAL_AUDCODEC_Receive_DMA(&s_codec, s_dma_buf, sizeof(s_dma_buf),
+    if (!s_skip_channel && HAL_AUDCODEC_Receive_DMA(&s_codec, s_dma_buf, sizeof(s_dma_buf),
                                  (s_cfg.channel == 1) ? HAL_AUDCODEC_ADC_CH1
                                                       : HAL_AUDCODEC_ADC_CH0) != HAL_OK)
     {

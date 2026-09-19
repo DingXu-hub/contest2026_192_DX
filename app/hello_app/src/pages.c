@@ -1241,10 +1241,47 @@ void page_handle_touch(app_ctx_t *ctx, touch_event_t ev)
     render_state_t *rs = ctx->renderer;
     int tx = -1, ty = -1;
 
+    /* Touch fallback for page switching.  This board exposes a single user key
+     * (KEY2 on PA43) and it does not register on this unit, so swiping left or
+     * right steps through the pages.  Nothing visible is added, nothing sits in
+     * the corners and no long press is involved. */
+    if (ev == TOUCH_EV_SWIPE_LEFT || ev == TOUCH_EV_SWIPE_RIGHT)
+    {
+        int cur = (int)ctx->ui.current;
+
+        cur += (ev == TOUCH_EV_SWIPE_LEFT) ? 1 : -1;
+        if (cur >= (int)PAGE_COUNT)
+            cur = 0;
+        if (cur < 0)
+            cur = (int)PAGE_COUNT - 1;
+        page_set(ctx, (page_id_t)cur);
+        return;
+    }
+
     if (ev != TOUCH_EV_TAP)
         return;                     /* no long press / double tap actions */
 
     touch_get_last_pos(&tx, &ty);
+
+    /* Page switching by tapping the page-indicator strip at the bottom centre.
+     * The physical key is not readable on this unit (five read methods tried,
+     * none ever saw a level change) and the touch engine does not hand swipe
+     * events to the page layer, but taps demonstrably work - so paging hangs
+     * off a tap zone there.  Bottom centre: no corner, no long press, and it is
+     * the page indicator itself.  Tap the left half to go back, right to go
+     * forward. */
+    if (ty >= 395 && ty <= 449 && tx >= 90 && tx <= 300)
+    {
+        int cur = (int)ctx->ui.current;
+
+        cur += (tx < 195) ? -1 : 1;
+        if (cur >= (int)PAGE_COUNT)
+            cur = 0;
+        if (cur < 0)
+            cur = (int)PAGE_COUNT - 1;
+        page_set(ctx, (page_id_t)cur);
+        return;
+    }
 
     /* the AI toast is modal: a tap on it dismisses the card instead of
      * falling through to whatever button sits underneath */

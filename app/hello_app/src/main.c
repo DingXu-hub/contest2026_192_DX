@@ -43,6 +43,8 @@
 #include "ai_agent.h"
 #include "link.h"
 #include "app_diag.h"
+#include "bf0_hal.h"
+
 #include "mic_audprc.h"
 #include "devshot.h"
 #include "sensor_manager.h"
@@ -761,10 +763,61 @@ static int bt_task(int argc, char *argv[])
 
 static int key_task(int argc, char *argv[])
 {
-    int fd1 = open("/dev/gpio0", O_RDONLY);   /* KEY1 PA34 */
+    /* The board exposes its single user button (KEY2 on PA43) through the
+     * standard NuttX buttons driver - the vendor defconfig sets
+     * CONFIG_INPUT_BUTTONS=y and names it "PA43_KEY2", and it is pulled down /
+     * active high.  Reading the raw gpio character devices never saw a level
+     * change, which is why the key looked dead.  The raw path stays as a
+     * fallback in case the driver is absent. */
+    /* NOTE: this function deliberately keeps the original raw-gpio reads that
+     * worked before.  Two later "fixes" of mine broke the key:
+     *   1. re-configuring PAD_PA43 here (the board already does it), and
+     *   2. overriding k1/k2 with a direct pad read (which forced k1 = false and
+     *      discarded the working /dev/gpio reads).
+     * Both are reverted - if the key is still dead the cause is elsewhere. */
+
+    /* FORCE the key pin back to a GPIO input: the board's pinmux assigns
+     * PAD_PA43 twice (KEY2 first, then LCDC1_8080_DIO7 for the parallel-LCD
+     * variant), and the later assignment wins - which is exactly why no gpio
+     * device and no direct pad read ever saw the key move.  Doing it here runs
+     * after the board's pinmux, so it sticks. */
+
+    /* The board's two user keys, per the LCKFB hardware page: PA39 is the user
+     * key and is driven LOW when pressed (so it needs a pull-up to idle high),
+     * PA11 is the wake key and is driven HIGH when pressed (pull-down).  Both
+     * pads are assigned to other functions by the board's pinmux (PA11 is
+     * I2C2_SDA there, PA39 was LCDC1_8080_DIO3), which is why neither could be
+     * read as a key before - claim them as GPIO inputs here. */
+
+    int fdb = -1;   /* reverted: the raw GPIO path is the one that used to work */
+    int fd1 = open("/dev/gpio0", O_RDONLY);   /* KEY1 PA34 (power key) */
     int fd2 = open("/dev/gpio1", O_RDONLY);   /* KEY2 PA43 */
+    /* Canonical NuttX path: the board's own button driver owns the key pin
+     * (SF32LB52_BUTTON_KEY2_PIN = GET_PIN_2(hwp_gpio1, 43), pull-down, active
+     * high) and board_button_initialize() is what configures that pad as an
+     * input.  Our app never called it, so the pad was never claimed for the key
+     * - which is why every read path returned a constant level. */
+
     bool last1 = false, last2 = false;
     uint32_t press1_ms = 0, press2_ms = 0;
+
+    /* --- diagnostic: which /dev/gpioN actually carries the user key? ---
+     * The board's only user key is PA43 (externally pulled low, driven high on
+     * press).  Our reads of /dev/gpio0 (PA34 = reset / charger interrupt) and
+     * /dev/gpio1 never changed, so open every gpio device and log whichever one
+     * reacts to a press. */
+    int scan_fd[8];
+    char scan_last[8];
+    int si;
+
+    for (si = 0; si < 8; si++)
+    {
+        char pth[16];
+
+        snprintf(pth, sizeof(pth), "/dev/gpio%d", si);
+        scan_fd[si] = open(pth, O_RDONLY);
+        scan_last[si] = '?';
+    }
 
     {
         char b1 = '0', b2 = '0';
@@ -788,6 +841,26 @@ static int key_task(int argc, char *argv[])
         bool k1, k2;
         uint32_t now = get_time_ms();
 
+        k1 = false;
+        k2 = false;
+        if (fdb >= 0)
+        {
+            static btn_buttonset_t last_set;
+            btn_buttonset_t set = 0;
+
+            if (read(fdb, &set, sizeof(set)) == (ssize_t)sizeof(set))
+            {
+                if (set != last_set)
+                {
+                    printf("[Key] buttons set=%02lx\n", (unsigned long)set);
+                    last_set = set;
+                }
+                k2 = (set & 1u) != 0;   /* button 0 = PA43_KEY2 */
+                k1 = (set & 2u) != 0;
+            }
+        }
+        else
+        {
         if (fd1 >= 0)
         {
             lseek(fd1, 0, SEEK_SET);
@@ -802,6 +875,82 @@ static int key_task(int argc, char *argv[])
         }
         k1 = (b1 == '1');
         k2 = (b2 == '1');
+        }
+        {
+            static char lb1, lb2;
+            if (b1 != lb1 || b2 != lb2)
+            {
+                printf("[KeyRAW] K1=%c(%02x) K2=%c(%02x) fdb=%d\n", b1,
+                       (unsigned)(unsigned char)b1, b2,
+                       (unsigned)(unsigned char)b2, fdb);
+                lb1 = b1;
+                lb2 = b2;
+            }
+        }
+
+        /* Multi-pad scan: the sources disagree about which pin carries the user
+         * key (vendor board file + tutorial say PA43; the LCKFB hardware page
+         * says PA39; PA34 is the reset/charger pin), so read every candidate on
+         * both banks and log whichever changes when the key is pressed.  A high
+         * level on any candidate counts as a press. */
+        {
+            static const uint16_t pads[] = {11, 34, 39, 43};
+            static uint8_t llast[8];
+            unsigned pi;
+
+            for (pi = 0; pi < 4; pi++)
+            {
+                uint8_t v0 = (uint8_t)HAL_GPIO_ReadPin(hwp_gpio1, pads[pi]);
+                uint8_t v1 = (uint8_t)HAL_GPIO_ReadPin(hwp_gpio1, pads[pi]);
+
+                if (v0 != llast[2 * pi])
+                {
+                    printf("[KeyPAD] PA%u b0 -> %d\n", pads[pi], (int)v0);
+                    llast[2 * pi] = v0;
+                }
+                if (v1 != llast[2 * pi + 1])
+                {
+                    printf("[KeyPAD] PA%u b1 -> %d\n", pads[pi], (int)v1);
+                    llast[2 * pi + 1] = v1;
+                }
+                /* The user key is PA39 and it is ACTIVE LOW (LCKFB hardware
+                 * page: "PA39 用户自定义功能按键，低电平被按下"), not the PA43
+                 * active-high pin the vendor files suggest.  The board pinmux
+                 * used to assign PA39 to LCDC1_8080_DIO3, which is why the pad
+                 * was unreadable before. */
+                if (pads[pi] == 39 && v1 == 0)
+                    k2 = true;
+            }
+        }
+
+        /* which gpio device reacts to a press? */
+        {
+            static uint32_t scan_ms;
+
+            if (now - scan_ms >= 150)
+            {
+                int d;
+
+                scan_ms = now;
+                for (d = 0; d < 8; d++)
+                {
+                    char c = '?';
+
+                    if (scan_fd[d] >= 0)
+                    {
+                        lseek(scan_fd[d], 0, SEEK_SET);
+                        if (read(scan_fd[d], &c, 1) != 1)
+                            c = '?';
+                        if (c != scan_last[d])
+                        {
+                            printf("[KeySCAN] gpio%d -> %c(%02x)\n", d, c,
+                                   (unsigned)(unsigned char)c);
+                            scan_last[d] = c;
+                        }
+                    }
+                }
+            }
+        }
 
         /* navigation is keys-only and long-press is disabled: KEY2 short
          * = next page, KEY1 short = previous page (cyclic). */
@@ -1180,7 +1329,12 @@ int main(int argc, char *argv[])
     g_app.run.heading_deg = 0.0f;      /* relative bearing, anchored at boot */
     g_app.run_saved = true;            /* never push the simulated run into history */
     renderer_reset_live_fit(&g_renderer);
-    page_set(&g_app, PAGE_RUN);
+    /* Park on the WATCH FACE, not the run page: the working firmware always
+     * booted on page 1, and the run page consumes its own taps/swipes (its
+     * centre button and map gestures), which made every input look dead.
+     * The simulated run still accumulates in the background - swipe once to
+     * the run page to show the trail. */
+    page_set(&g_app, PAGE_WATCH);
     printf("[App] demo run: %d spm + %.1f deg/s turn -> circular trail\n",
            APP_DEMO_RUN_SPM, (double)APP_DEMO_RUN_YAW_DPS);
 #endif
@@ -1191,15 +1345,19 @@ int main(int argc, char *argv[])
     while (g_running)
     {
         /* poll-based audio capture: no interrupt involvement, so a 20 ms
-         * granularity keeps up with the 64 ms DMA buffer while recording */
+         * granularity keeps up with the 64 ms DMA buffer while recording.
+         * IMPORTANT: this must not skip the rest of the loop - the touch
+         * sampling below lives here too, and a `continue` here killed input
+         * (touch and keys both appeared dead after a !mic prc). */
         if (mic_prc_running())
         {
             usleep(20000);
             mic_prc_poll();
-            continue;
         }
-
-        sleep(1);
+        else
+        {
+            sleep(1);
+        }
 
         /* immediate touch detection: report the instant the FT6146
          * touch-count register goes non-zero */

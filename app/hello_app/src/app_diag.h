@@ -26,7 +26,7 @@
  * Use it for screenshots/video when a real outdoor run is not possible; the
  * trail is then SIMULATED and must be labelled as such in the video.
  * ---------------------------------------------------------------------- */
-#define APP_DEMO_RUN 0
+#define APP_DEMO_RUN 1
 #define APP_DEMO_RUN_SPM 170        /* synthesised cadence, steps/minute */
 #define APP_DEMO_RUN_YAW_DPS 9.0f   /* turn rate -> one lap about every 40 s */
 
