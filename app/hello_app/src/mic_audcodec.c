@@ -45,7 +45,12 @@ static struct {
     bool pll_full;        /* bf0_enable_pll() instead of updata_pll_freq()+HAL_TURN_ON_PLL() */
     bool analog_late;     /* analogue ADC path after the digital enable           */
     bool vendor_adc_cfg;  /* also call the vendor Config_ADCPath()                */
+    bool pll_after_analog;/* re-enable the PLL after the analogue path (it resets it) */
 } s_try;
+
+/* set while mic_sweep2() runs so a few hundred starts do not flood the
+ * console with the per-start register dumps */
+static bool s_quiet;
 
 /* DMA wiring for AUDCODEC ADC0, copied from the vendor header
  * vendor/sifli/chips/boards/include/config/sf32lb52x/dma_config.h (the app
@@ -204,6 +209,20 @@ bool mic_start(const mic_cfg_t *cfg)
      * (the reference board does the same: "PAD_PA09 ... share with MIC") */
     HAL_PIN_Set(PAD_PA09, GPIO_A9, PIN_NOPULL, 1);
 
+    /* The audio crystal buffer has a DRIVE STRENGTH field (PMUC_HXT_CR1.
+     * BUF_AUD_STR) that the vendor HAL never touches - bf0_enable_pll() only
+     * sets BUF_AUD_EN.  If the buffer is too weak the codec never receives its
+     * clock at all, which is exactly the symptom measured (every register
+     * correct, no conversion, no DMA request).  Raise it to maximum. */
+    {
+        uint32_t before = hwp_pmuc->HXT_CR1;
+
+        hwp_pmuc->HXT_CR1 = (before & ~PMUC_HXT_CR1_BUF_AUD_STR_Msk) |
+                            (3u << PMUC_HXT_CR1_BUF_AUD_STR_Pos);
+        printf("[MicCLK] HXT_CR1 %08lx -> %08lx\n", (unsigned long)before,
+               (unsigned long)hwp_pmuc->HXT_CR1);
+    }
+
     /* codec PLL: 49.152 MHz for the 16 kHz (48 k family) sample rates */
     if (s_try.pll_full)
     {
@@ -323,6 +342,7 @@ bool mic_start(const mic_cfg_t *cfg)
             uint32_t n0 = s_stats_n;
 
             usleep(150000);
+            if (!s_quiet)
             printf("[MicLIVE] +150 ms: cndtr %lu->%lu entry %08lx->%08lx "
                    "samples %lu->%lu irq=%lu\n",
                    (unsigned long)c0, (unsigned long)s_dma.Instance->CNDTR,
@@ -352,12 +372,39 @@ bool mic_start(const mic_cfg_t *cfg)
     /* Dump the analogue side right here: the codec register block reads back
      * the bus magic pattern once the PM gates its clock, so an outside
      * `!mic regs` a second later shows nothing useful. */
+    if (s_try.pll_after_analog)
+    {
+        /* The analogue ADC path helper toggles PLL_CFG2.RSTB (it resets the
+         * PLL), which may throw away the calibration bf0_enable_pll() just
+         * did - so bring the PLL up again AFTER the analogue path and report
+         * what the status register says. */
+        int r;
+
+        if (s_try.pll_full)
+        {
+            r = bf0_enable_pll(49152000u, (uint8_t)s_cfg.pll_type);
+            printf("[MicPLL] re-enable after analogue -> %d\n", r);
+        }
+        else
+        {
+            r = updata_pll_freq(s_cfg.pll_type);
+            HAL_TURN_ON_PLL();
+            printf("[MicPLL] re-updata+HAL_TURN_ON_PLL -> %d\n", r);
+        }
+        printf("[MicPLL] PLL_STAT=%08lx CAL_RESULT=%08lx CFG0=%08lx CFG2=%08lx\n",
+               (unsigned long)hwp_audcodec->PLL_STAT,
+               (unsigned long)hwp_audcodec->PLL_CAL_RESULT,
+               (unsigned long)hwp_audcodec->PLL_CFG0,
+               (unsigned long)hwp_audcodec->PLL_CFG2);
+    }
+
     printf("[MicCFG] CFG=%08lx ADC_CFG=%08lx CH0=%08lx ANA=%08lx REFGEN=%08lx\n",
            (unsigned long)hwp_audcodec->CFG,
            (unsigned long)hwp_audcodec->ADC_CFG,
            (unsigned long)hwp_audcodec->ADC_CH0_CFG,
            (unsigned long)hwp_audcodec->ADC_ANA_CFG,
            (unsigned long)hwp_audcodec->REFGEN_CFG);
+    if (!s_quiet)
     printf("[MicCFG] ADC1_1=%08lx ADC1_2=%08lx ADC2_1=%08lx ADC2_2=%08lx "
            "PLL5=%08lx PLL6=%08lx PLL0=%08lx STAT=%08lx BG0=%08lx\n",
            (unsigned long)hwp_audcodec->ADC1_CFG1,
@@ -432,6 +479,9 @@ int mic_try(int variant)
     case 5: s_try.en_dly3 = s_try.pll_full = s_try.analog_late = true; break;
     case 6: s_try.en_dly3 = s_try.pll_full = s_try.analog_late =
             s_try.vendor_adc_cfg = true; break;
+    case 7: s_try.pll_after_analog = true; break;
+    case 8: s_try.pll_after_analog = s_try.pll_full = true; break;
+    case 9: s_try.pll_after_analog = s_try.pll_full = s_try.en_dly3 = true; break;
     default: break;                       /* 0 = current baseline */
     }
 
@@ -521,6 +571,79 @@ void mic_dump_regs(void)
            (unsigned long)s_dma.Instance->CCR,
            (unsigned long)s_dma.Instance->CNDTR,
            (int)s_running);
+}
+
+/* Brute-force bring-up sweep, run entirely on the device: walk the clock
+ * source / divider / frame-sync / op-mode / PLL-type combinations with the
+ * (now known correct) order analogue -> PLL -> enable, and report every
+ * combination that actually makes the ADC produce data.  Each combo is short
+ * (60 ms) so a few hundred fit in well under a minute. */
+void mic_sweep2(void)
+{
+    static const uint8_t plls[]  = {0, 1};
+    static const uint8_t srcs[]  = {0, 1};
+    static const uint8_t sels[]  = {0, 1, 2};
+    static const uint8_t divas[] = {1, 5, 10};
+    static const uint8_t fsps[]  = {0, 1, 2, 3};
+    static const uint8_t opms[]  = {0, 2};
+    static const uint8_t chans[] = {0, 1};   /* the mic may be on either ADC */
+    static const uint8_t ords[]  = {0, 1};   /* DMA-before-enable / after    */
+    unsigned p, s, a, d, f, o, c, r;
+    int tried = 0;
+    int hits = 0;
+
+    s_quiet = true;
+    for (c = 0; c < sizeof(chans); c++)
+    for (r = 0; r < sizeof(ords); r++)
+    for (p = 0; p < sizeof(plls); p++)
+    for (s = 0; s < sizeof(srcs); s++)
+    for (a = 0; a < sizeof(sels); a++)
+    for (d = 0; d < sizeof(divas); d++)
+    for (f = 0; f < sizeof(fsps); f++)
+    for (o = 0; o < sizeof(opms); o++)
+    {
+        mic_cfg_t cfg;
+        uint32_t c0;
+
+        mic_cfg_default(&cfg);
+        cfg.pll_type           = plls[p];
+        cfg.sel_clk_adc_source = srcs[s];
+        cfg.sel_clk_adc        = sels[a];
+        cfg.diva_clk_adc       = divas[d];
+        cfg.fsp                = fsps[f];
+        cfg.opmode             = opms[o];
+        cfg.channel            = chans[c];
+
+        memset(&s_try, 0, sizeof(s_try));
+        s_try.pll_full         = true;  /* vendor's full sequence        */
+        s_try.pll_after_analog = true;  /* the analogue path resets it   */
+        s_try.analog_late      = (ords[r] != 0);
+
+        if (!mic_start(&cfg))
+            continue;
+
+        c0 = s_dma.Instance->CNDTR;
+        usleep(60000);
+        report_activity();
+
+        if (s_dma.Instance->CNDTR != c0 || s_stats_n > 0)
+        {
+            hits++;
+            printf("[MicHIT] ch=%u ord=%u pll=%u src=%u seladc=%u diva=%u fsp=%u op=%u "
+                   "cndtr %lu->%lu samples=%lu entry=%08lx\n",
+                   chans[c], ords[r], plls[p], srcs[s], sels[a], divas[d],
+                   fsps[f], opms[o],
+                   (unsigned long)c0,
+                   (unsigned long)s_dma.Instance->CNDTR,
+                   (unsigned long)s_stats_n,
+                   (unsigned long)hwp_audcodec->ADC_CH0_ENTRY);
+        }
+
+        mic_stop();
+        tried++;
+    }
+    s_quiet = false;
+    printf("[MicSWEEP2] %d combinations tried, %d produced data\n", tried, hits);
 }
 
 /* Direct, IRQ-independent evidence.  Our own stats only move when the HAL's
