@@ -283,42 +283,45 @@ int mic_prc_read(int16_t *out, int max_samples)
  * that finally localised the AUDCODEC problem. */
 void mic_prc_sweep(void)
 {
-    int s;
+    int src, fmt, mode;
+    int tried = 0;
     int hits = 0;
 
-    for (s = 0; s < 4; s++)
+    for (src = 0; src < 2; src++)
+    for (fmt = 0; fmt < 2; fmt++)
+    for (mode = 0; mode < 2; mode++)
     {
-        uint32_t n0 = s_stats_n;
-        uint32_t i0 = s_irqs;
-        uint32_t c0;
-        uint32_t c1;
+        uint32_t cfg0;
+        int nz = 0;
+        int32_t pk = 0;
         int i;
 
-        if (!mic_prc_start(s))
+        if (!mic_prc_start(src))
             continue;
-        c0 = (uint32_t)s_dma.Instance->CNDTR;
-        for (i = 0; i < 20; i++)
-        {
-            usleep(10000);
-        }
-        c1 = (uint32_t)s_dma.Instance->CNDTR;
-        printf("[MicPRCSWEEP] src_sel=%d cndtr %lu->%lu irqs %lu->%lu samples %lu->%lu",
-               s, (unsigned long)c0, (unsigned long)c1, (unsigned long)i0,
-               (unsigned long)s_irqs, (unsigned long)n0,
-               (unsigned long)s_stats_n);
-        puts("");
-        {
-            int nz;
-            int32_t pk;
 
-            mic_prc_peek(&nz, &pk, NULL, NULL);
-            printf("[MicPRCSWEEP]   buf nonzero=%d peak=%ld", nz, (long)pk);
-            puts("");
-            if (nz > 0 || pk > 0 || c1 != c0 || s_stats_n != n0 || s_irqs != i0)
-                hits++;
-        }
+        /* poke the RX format/mode bits the HAL never touches */
+        cfg0 = hwp_audprc->RX_CH0_CFG;
+        cfg0 &= ~(AUDPRC_RX_CH0_CFG_FORMAT_Msk | AUDPRC_RX_CH0_CFG_MODE_Msk);
+        cfg0 |= ((uint32_t)fmt << AUDPRC_RX_CH0_CFG_FORMAT_Pos) |
+                ((uint32_t)mode << AUDPRC_RX_CH0_CFG_MODE_Pos);
+        hwp_audprc->RX_CH0_CFG = cfg0;
+
+        for (i = 0; i < 12; i++)
+            usleep(10000);
+
+        mic_prc_peek(&nz, &pk, NULL, NULL);
+        printf("[MicPRCSWEEP] src=%d fmt=%d mode=%d -> RX_CFG=%08lx CCR=%08lx "
+               "CNDTR=%lu nz=%d peak=%ld irqs=%lu",
+               src, fmt, mode, (unsigned long)hwp_audprc->RX_CH0_CFG,
+               (unsigned long)s_dma.Instance->CCR,
+               (unsigned long)s_dma.Instance->CNDTR, nz, (long)pk,
+               (unsigned long)s_irqs);
+        puts("");
+        if (nz > 0 || pk > 0)
+            hits++;
         mic_prc_stop();
+        tried++;
     }
-    printf("[MicPRCSWEEP] %d source selectors tried, %d produced data", 4, hits);
+    printf("[MicPRCSWEEP] %d combinations, %d produced non-zero data", tried, hits);
     puts("");
 }
