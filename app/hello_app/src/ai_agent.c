@@ -557,6 +557,26 @@ static void handle_line(char *line)
                                                           : "start failed"));
                 }
             }
+            else if (!strncmp(arg, "pllstart", 8))
+            {
+                mic_pll_start();
+                snprintf(b, sizeof(b), "pll calibration armed (read with !mic pllread)");
+            }
+            else if (!strncmp(arg, "pllread", 7))
+            {
+                mic_pll_read();
+                snprintf(b, sizeof(b), "pll read done (see [MicPLL])");
+            }
+            else if (!strncmp(arg, "sweep3", 6))
+            {
+                if (g_ctx && g_ctx->pm)
+                {
+                    pm_report_activity(g_ctx->pm);
+                    pm_enter_active(g_ctx->pm);
+                }
+                mic_sweep3();
+                snprintf(b, sizeof(b), "sweep3 done (see [MicHIT3]/[MicSWEEP3])");
+            }
             else if (!strncmp(arg, "sweep2", 6))
             {
                 if (g_ctx && g_ctx->pm)

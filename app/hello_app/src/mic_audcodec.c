@@ -407,6 +407,35 @@ bool mic_start(const mic_cfg_t *cfg)
     /* Dump the analogue side right here: the codec register block reads back
      * the bus magic pattern once the PM gates its clock, so an outside
      * `!mic regs` a second later shows nothing useful. */
+    /* In-place PLL health check: arm the VCO calibration and read it here,
+     * because the codec's APB clock is gated as soon as this routine returns
+     * (measured: the register reads back the block ID / 0xc0dec000).  A live
+     * PLL leaves non-zero counters and sets DONE within a few hundred us; if
+     * DONE never sets and the result stays zero the ADC simply has no clock. */
+    {
+        int k;
+        uint32_t ccfg;
+
+        hwp_audcodec->PLL_CAL_CFG = (0u << AUDCODEC_PLL_CAL_CFG_EN_Pos) |
+                                    (2000u << AUDCODEC_PLL_CAL_CFG_LEN_Pos);
+        hwp_audcodec->PLL_CAL_CFG |= AUDCODEC_PLL_CAL_CFG_EN;
+        for (k = 0; k < 200; k++)
+        {
+            if (hwp_audcodec->PLL_CAL_CFG & AUDCODEC_PLL_CAL_CFG_DONE_Msk)
+                break;
+            usleep(100);
+        }
+        ccfg = hwp_audcodec->PLL_CAL_CFG;
+        printf("[MicPLL] DONE=%d after %d us RESULT=%08lx STAT=%08lx "
+               "CFG0=%08lx BG0=%08lx\n",
+               (ccfg & AUDCODEC_PLL_CAL_CFG_DONE_Msk) ? 1 : 0, k * 100,
+               (unsigned long)hwp_audcodec->PLL_CAL_RESULT,
+               (unsigned long)hwp_audcodec->PLL_STAT,
+               (unsigned long)hwp_audcodec->PLL_CFG0,
+               (unsigned long)hwp_audcodec->BG_CFG0);
+        hwp_audcodec->PLL_CAL_CFG &= ~AUDCODEC_PLL_CAL_CFG_EN;
+    }
+
     if (s_try.pll_after_analog)
     {
         /* The analogue ADC path helper toggles PLL_CFG2.RSTB (it resets the
@@ -684,11 +713,103 @@ void mic_sweep2(void)
     printf("[MicSWEEP2] %d combinations tried, %d produced data\n", tried, hits);
 }
 
+/* Focused follow-up sweep: the big sweep never varied OSR_SEL (the sigma-delta
+ * oversampling ratio - the core parameter of the decimation filter) nor the
+ * strobe-invert bit, both of which we had fixed at 1/0 since the beginning. */
+void mic_sweep3(void)
+{
+    int ch, osr, inv;
+    int tried = 0;
+    int hits = 0;
+
+    s_quiet = true;
+    for (ch = 0; ch < 2; ch++)
+    for (osr = 0; osr < 8; osr++)
+    for (inv = 0; inv < 2; inv++)
+    {
+        mic_cfg_t cfg;
+        uint32_t c0;
+
+        mic_cfg_default(&cfg);
+        cfg.channel = ch;
+        cfg.osr_sel = (uint8_t)osr;
+
+        memset(&s_try, 0, sizeof(s_try));
+        s_try.pll_full         = true;
+        s_try.pll_after_analog = true;
+        s_try.bg_vref          = 0xc;
+
+        if (!mic_start(&cfg))
+            continue;
+
+        /* some paths rewrite ADC_CFG, so set OSR and STB_INV last */
+        hwp_audcodec->ADC_CFG = (hwp_audcodec->ADC_CFG &
+                                 ~AUDCODEC_ADC_CFG_OSR_SEL_Msk) |
+                                ((uint32_t)osr << AUDCODEC_ADC_CFG_OSR_SEL_Pos);
+        if (ch == 0)
+            hwp_audcodec->ADC_CH0_CFG =
+                (hwp_audcodec->ADC_CH0_CFG & ~AUDCODEC_ADC_CH0_CFG_STB_INV) |
+                ((uint32_t)inv << AUDCODEC_ADC_CH0_CFG_STB_INV_Pos);
+        else
+            hwp_audcodec->ADC_CH1_CFG =
+                (hwp_audcodec->ADC_CH1_CFG & ~AUDCODEC_ADC_CH0_CFG_STB_INV) |
+                ((uint32_t)inv << AUDCODEC_ADC_CH0_CFG_STB_INV_Pos);
+
+        c0 = s_dma.Instance->CNDTR;
+        usleep(80000);
+        report_activity();
+
+        if (s_dma.Instance->CNDTR != c0 || s_stats_n > 0)
+        {
+            hits++;
+            printf("[MicHIT3] ch=%d osr=%d stb_inv=%d cndtr %lu->%lu samples=%lu entry0=%08lx entry1=%08lx\n",
+                   ch, osr, inv, (unsigned long)c0,
+                   (unsigned long)s_dma.Instance->CNDTR,
+                   (unsigned long)s_stats_n,
+                   (unsigned long)hwp_audcodec->ADC_CH0_ENTRY,
+                   (unsigned long)hwp_audcodec->ADC_CH1_ENTRY);
+        }
+
+        mic_stop();
+        tried++;
+    }
+    s_quiet = false;
+    printf("[MicSWEEP3] %d combinations (OSR x strobe-invert x channel), %d hits\n",
+           tried, hits);
+}
+
 /* Decisive clock measurement: trigger the PLL's own VCO calibration and see
  * whether it ever completes.  A running PLL always leaves non-zero counters in
  * PLL_CAL_RESULT and sets DONE; if DONE never sets (or the counters stay zero)
  * the PLL is not oscillating at all, which would explain "registers perfect, no
  * conversion" without any configuration mistake. */
+/* Non-blocking PLL probes: arming and reading are separate commands so no
+ * command ever spins (the earlier blocking probe stalled the AI task).  If DONE
+ * never sets and PLL_CAL_RESULT stays zero, the audio PLL is not oscillating -
+ * i.e. the ADC has no conversion clock at all. */
+void mic_pll_start(void)
+{
+    hwp_audcodec->PLL_CAL_CFG = (0u << AUDCODEC_PLL_CAL_CFG_EN_Pos) |
+                                (2000u << AUDCODEC_PLL_CAL_CFG_LEN_Pos);
+    hwp_audcodec->PLL_CAL_CFG |= AUDCODEC_PLL_CAL_CFG_EN;
+    printf("[MicPLL] armed CAL_CFG=%08lx\n",
+           (unsigned long)hwp_audcodec->PLL_CAL_CFG);
+}
+
+void mic_pll_read(void)
+{
+    printf("[MicPLL] CAL_CFG=%08lx DONE=%d RESULT=%08lx STAT=%08lx "
+           "CFG0=%08lx CFG2=%08lx CFG6=%08lx\n",
+           (unsigned long)hwp_audcodec->PLL_CAL_CFG,
+           (hwp_audcodec->PLL_CAL_CFG & AUDCODEC_PLL_CAL_CFG_DONE_Msk) ? 1 : 0,
+           (unsigned long)hwp_audcodec->PLL_CAL_RESULT,
+           (unsigned long)hwp_audcodec->PLL_STAT,
+           (unsigned long)hwp_audcodec->PLL_CFG0,
+           (unsigned long)hwp_audcodec->PLL_CFG2,
+           (unsigned long)hwp_audcodec->PLL_CFG6);
+    hwp_audcodec->PLL_CAL_CFG &= ~AUDCODEC_PLL_CAL_CFG_EN;
+}
+
 void mic_pll_probe(void)
 {
     uint32_t before = hwp_audcodec->PLL_CAL_RESULT;

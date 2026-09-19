@@ -60,8 +60,15 @@ void mic_probe(int ms);
 /* on-device brute-force sweep over clock/frame options (reports any hit) */
 void mic_sweep2(void);
 
+/* focused sweep over OSR_SEL / strobe-invert, which the big sweep omitted */
+void mic_sweep3(void);
+
 /* trigger the PLL VCO calibration and report whether it completes */
 void mic_pll_probe(void);
+
+/* non-blocking: arm the VCO calibration, then read it in a later command */
+void mic_pll_start(void);
+void mic_pll_read(void);
 
 /* install the keep-awake callback (called from the capture paths) */
 void mic_set_activity_hook(void (*fn)(void));
