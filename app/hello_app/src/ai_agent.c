@@ -27,6 +27,7 @@
 #include "ai_agent.h"
 #include "link.h"
 #include "mic_audcodec.h"
+#include "mic_audprc.h"
 #include "runtime_skill.h"
 #include "pages.h"
 #include "sensor_manager.h"
@@ -555,6 +556,37 @@ static void handle_line(char *line)
                     snprintf(b, sizeof(b), "mic try v%d -> %s", v,
                              r == 1 ? "SAMPLES" : (r == 0 ? "no data"
                                                           : "start failed"));
+                }
+            }
+            else if (!strncmp(arg, "prcsweep", 8))
+            {
+                if (g_ctx && g_ctx->pm)
+                {
+                    pm_report_activity(g_ctx->pm);
+                    pm_enter_active(g_ctx->pm);
+                }
+                mic_prc_sweep();
+                snprintf(b, sizeof(b), "prcsweep done (see [MicPRCSWEEP])");
+            }
+            else if (!strncmp(arg, "prc", 3))
+            {
+                mic_cfg_t cfg;
+                uint32_t n, irqs, cndtr;
+                int32_t peak, rms;
+
+                mic_cfg_default(&cfg);
+                if (!mic_start(&cfg))
+                    snprintf(b, sizeof(b), "codec start failed");
+                else if (!mic_prc_start(0))
+                    snprintf(b, sizeof(b), "audprc start failed");
+                else
+                {
+                    usleep(200000);
+                    mic_prc_stats(&n, &peak, &rms, &irqs, &cndtr);
+                    snprintf(b, sizeof(b),
+                             "audprc: samples=%lu peak=%ld rms=%ld irqs=%lu cndtr=%lu",
+                             (unsigned long)n, (long)peak, (long)rms,
+                             (unsigned long)irqs, (unsigned long)cndtr);
                 }
             }
             else if (!strncmp(arg, "pllstart", 8))

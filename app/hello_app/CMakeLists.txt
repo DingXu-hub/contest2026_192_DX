@@ -10,6 +10,8 @@ set(SRCS
     src/touch_handler.c
     src/sensor_manager.c
     src/attitude6.c
+    src/fusion/FusionAhrs.c
+    src/fusion/FusionBias.c
     src/madgwick.c
     src/mag_mmc5603.c
     src/als_ltr303.c
@@ -23,6 +25,7 @@ set(SRCS
     src/net_link.c
     src/link.c
     src/mic_audcodec.c
+    src/mic_audprc.c
     src/runtime_skill.c
     src/ai_agent.c
     src/ppp_link.c
