@@ -542,11 +542,11 @@ static void handle_line(char *line)
                 {
                     int i, hit = 0;
 
-                    for (i = 0; i <= 6; i++)
+                    for (i = 0; i <= 12; i++)
                         if (mic_try(i) == 1)
                             hit++;
                     snprintf(b, sizeof(b),
-                             "mic try: %d of 7 variants produced samples", hit);
+                             "mic try: %d of 13 variants produced samples", hit);
                 }
                 else
                 {
@@ -556,6 +556,16 @@ static void handle_line(char *line)
                              r == 1 ? "SAMPLES" : (r == 0 ? "no data"
                                                           : "start failed"));
                 }
+            }
+            else if (!strncmp(arg, "sweep2", 6))
+            {
+                if (g_ctx && g_ctx->pm)
+                {
+                    pm_report_activity(g_ctx->pm);
+                    pm_enter_active(g_ctx->pm);
+                }
+                mic_sweep2();
+                snprintf(b, sizeof(b), "sweep2 done (see [MicHIT]/[MicSWEEP2])");
             }
             else if (!strncmp(arg, "probe", 5))
             {

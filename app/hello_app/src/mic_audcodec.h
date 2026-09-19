@@ -57,6 +57,12 @@ int  mic_try(int variant);
 /* direct DMA/buffer evidence, independent of the IRQ statistics */
 void mic_probe(int ms);
 
+/* on-device brute-force sweep over clock/frame options (reports any hit) */
+void mic_sweep2(void);
+
+/* trigger the PLL VCO calibration and report whether it completes */
+void mic_pll_probe(void);
+
 /* install the keep-awake callback (called from the capture paths) */
 void mic_set_activity_hook(void (*fn)(void));
 

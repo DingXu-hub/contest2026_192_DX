@@ -46,6 +46,7 @@ static struct {
     bool analog_late;     /* analogue ADC path after the digital enable           */
     bool vendor_adc_cfg;  /* also call the vendor Config_ADCPath()                */
     bool pll_after_analog;/* re-enable the PLL after the analogue path (it resets it) */
+    int  bg_vref;         /* 0 = leave BG_CFG0 alone, else VREF_SEL value */
 } s_try;
 
 /* set while mic_sweep2() runs so a few hundred starts do not flood the
@@ -340,21 +341,55 @@ bool mic_start(const mic_cfg_t *cfg)
             uint32_t c0 = s_dma.Instance->CNDTR;
             uint32_t e0 = hwp_audcodec->ADC_CH0_ENTRY;
             uint32_t n0 = s_stats_n;
+            uint32_t irq0 = hwp_audcodec->IRQ;
+            uint32_t apb0 = hwp_audcodec->APB_STAT;
+
+            /* ID/APB_STAT/IRQ are the diagnostics we never looked at: ID proves
+             * the block answers at all, and the ADC_CHx_* IRQ bits distinguish
+             * "the codec converts but nobody drains it" (APB_OF overflow) from
+             * "the codec never converts" (all zero). */
+            printf("[MicSTAT] before: ID=%08lx APB=%08lx IRQ=%08lx MSK=%08lx\n",
+                   (unsigned long)hwp_audcodec->ID,
+                   (unsigned long)apb0, (unsigned long)irq0,
+                   (unsigned long)hwp_audcodec->IRQ_MSK);
 
             usleep(150000);
             if (!s_quiet)
             printf("[MicLIVE] +150 ms: cndtr %lu->%lu entry %08lx->%08lx "
-                   "samples %lu->%lu irq=%lu\n",
+                   "samples %lu->%lu irq=%lu APB=%08lx IRQ=%08lx\n",
                    (unsigned long)c0, (unsigned long)s_dma.Instance->CNDTR,
                    (unsigned long)e0,
                    (unsigned long)hwp_audcodec->ADC_CH0_ENTRY,
                    (unsigned long)n0, (unsigned long)s_stats_n,
-                   (unsigned long)s_half_irqs);
+                   (unsigned long)s_half_irqs,
+                   (unsigned long)hwp_audcodec->APB_STAT,
+                   (unsigned long)hwp_audcodec->IRQ);
         }
     }
 
     HAL_NVIC_SetPriority(MIC_DMA_IRQ, 1, 0);
     HAL_NVIC_EnableIRQ(MIC_DMA_IRQ);
+
+    /* The shared analogue reference lives in BG_CFG0 (VREF_SEL / MIC_VREF_SEL /
+     * EN_AMP) and the vendor HAL only ever writes those fields from its
+     * *DAC*-path helper - the ADC-path helper never touches them.  We never
+     * call the DAC helper, so the sigma-delta modulator may have had no
+     * reference at all: that matches the evidence exactly (channel interface
+     * alive - see the ADC_CH0_APB_UF underflow flag - but no samples ever).
+     * Values follow the vendor comments: 0xc = AVDD 3.3 V, 2 = AVDD 1.8 V. */
+    if (s_try.bg_vref)
+    {
+        hwp_audcodec->BG_CFG0 &= ~(AUDCODEC_BG_CFG0_VREF_SEL_Msk |
+                                   AUDCODEC_BG_CFG0_MIC_VREF_SEL_Msk);
+        hwp_audcodec->BG_CFG0 |= ((uint32_t)s_try.bg_vref
+                                  << AUDCODEC_BG_CFG0_VREF_SEL_Pos) |
+                                 (4u << AUDCODEC_BG_CFG0_MIC_VREF_SEL_Pos) |
+                                 AUDCODEC_BG_CFG0_EN_RCFLT |
+                                 AUDCODEC_BG_CFG0_EN_AMP |
+                                 AUDCODEC_BG_CFG0_EN;
+        printf("[MicBG] BG_CFG0=%08lx (vref=%d, amp+rcflt+en)\n",
+               (unsigned long)hwp_audcodec->BG_CFG0, s_try.bg_vref);
+    }
 
     HAL_AUCODEC_Refgen_Init();
     if (!s_try.analog_late)
@@ -482,6 +517,9 @@ int mic_try(int variant)
     case 7: s_try.pll_after_analog = true; break;
     case 8: s_try.pll_after_analog = s_try.pll_full = true; break;
     case 9: s_try.pll_after_analog = s_try.pll_full = s_try.en_dly3 = true; break;
+    case 10: s_try.bg_vref = 0xc; s_try.pll_after_analog = true; break;
+    case 11: s_try.bg_vref = 2;   s_try.pll_after_analog = true; break;
+    case 12: s_try.bg_vref = 0xc; s_try.pll_after_analog = s_try.pll_full = true; break;
     default: break;                       /* 0 = current baseline */
     }
 
@@ -644,6 +682,42 @@ void mic_sweep2(void)
     }
     s_quiet = false;
     printf("[MicSWEEP2] %d combinations tried, %d produced data\n", tried, hits);
+}
+
+/* Decisive clock measurement: trigger the PLL's own VCO calibration and see
+ * whether it ever completes.  A running PLL always leaves non-zero counters in
+ * PLL_CAL_RESULT and sets DONE; if DONE never sets (or the counters stay zero)
+ * the PLL is not oscillating at all, which would explain "registers perfect, no
+ * conversion" without any configuration mistake. */
+void mic_pll_probe(void)
+{
+    uint32_t before = hwp_audcodec->PLL_CAL_RESULT;
+    uint32_t cfg0 = hwp_audcodec->PLL_CFG0;
+    uint32_t stat = hwp_audcodec->PLL_STAT;
+    int waited = 0;
+    int i;
+
+    hwp_audcodec->PLL_CAL_CFG = (0u << AUDCODEC_PLL_CAL_CFG_EN_Pos) |
+                                (2000u << AUDCODEC_PLL_CAL_CFG_LEN_Pos);
+    hwp_audcodec->PLL_CAL_CFG |= AUDCODEC_PLL_CAL_CFG_EN;
+
+    for (i = 0; i < 2000; i++)
+    {
+        if (hwp_audcodec->PLL_CAL_CFG & AUDCODEC_PLL_CAL_CFG_DONE_Msk)
+            break;
+        usleep(100);
+        waited += 100;
+    }
+    hwp_audcodec->PLL_CAL_CFG &= ~AUDCODEC_PLL_CAL_CFG_EN;
+
+    printf("[MicPLLPROBE] done=%d after %d us | CAL_CFG=%08lx CAL_RESULT %08lx -> "
+           "%08lx | PLL_CFG0 %08lx -> %08lx | STAT=%08lx (unlock=%d)\n",
+           (hwp_audcodec->PLL_CAL_CFG & AUDCODEC_PLL_CAL_CFG_DONE_Msk) ? 1 : 0,
+           waited, (unsigned long)hwp_audcodec->PLL_CAL_CFG,
+           (unsigned long)before, (unsigned long)hwp_audcodec->PLL_CAL_RESULT,
+           (unsigned long)cfg0, (unsigned long)hwp_audcodec->PLL_CFG0,
+           (unsigned long)stat,
+           (hwp_audcodec->PLL_STAT & AUDCODEC_PLL_STAT_UNLOCK_Msk) ? 1 : 0);
 }
 
 /* Direct, IRQ-independent evidence.  Our own stats only move when the HAL's
