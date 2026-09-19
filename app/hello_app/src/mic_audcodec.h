@@ -51,6 +51,9 @@ int  mic_read(int16_t *out, int max_samples);
 void mic_stats_reset(void);
 void mic_stats(uint32_t *samples, int32_t *peak, int32_t *rms);
 
+/* bring-up variant experiment: 1 = produced samples, 0 = no data, -1 = failed */
+int  mic_try(int variant);
+
 /* install the keep-awake callback (called from the capture paths) */
 void mic_set_activity_hook(void (*fn)(void));
 

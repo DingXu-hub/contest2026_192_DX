@@ -18,6 +18,7 @@
  */
 
 #include "pages.h"
+#include "app_diag.h"
 #include "kv_store.h"
 #include "ai_agent.h"
 #include "link.h"
@@ -1440,6 +1441,11 @@ void page_tick(app_ctx_t *ctx, uint32_t now_ms)
                 const attitude6_t *at = sensor_get_attitude(ctx->sensors);
                 gz = at ? at->yaw_rate : ctx->sensors->gyro_yaw_rate;
             }
+#if APP_DEMO_RUN
+            /* demo build: constant turn rate so the trail closes into a
+             * circle (pairs with the synthesised cadence in run_engine.c) */
+            gz = APP_DEMO_RUN_YAW_DPS;
+#endif
         }
 #ifdef CONFIG_ARCH_SIM
         if (ctx->run.running_ms > 8000 && ctx->run.running_ms < 20000)

@@ -11,6 +11,7 @@
  */
 
 #include "run_engine.h"
+#include "app_diag.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -235,6 +236,12 @@ void run_tick(run_engine_t *re, uint32_t now_ms, float accel_mag,
 #ifdef CONFIG_ARCH_SIM
     /* synthetic cadence (straight line: heading stays 0) */
     if (now_ms - re->last_step_ms >= SIM_STEP_INTERVAL_MS)
+        add_step(re, now_ms);
+#elif APP_DEMO_RUN
+    /* demo build: a steady synthesised cadence instead of peak detection, so
+     * the run page can be demonstrated without physically running (paired
+     * with the fixed turn rate injected by the caller - see pages.c) */
+    if (now_ms - re->last_step_ms >= (60000u / APP_DEMO_RUN_SPM))
         add_step(re, now_ms);
 #else
     /* peak detection on |accel - g| */

@@ -1168,6 +1168,22 @@ int main(int argc, char *argv[])
     }
 #endif
 
+#if APP_DEMO_RUN
+    /* Demo build: start a simulated run immediately and park the UI on the run
+     * page.  Steps come from the steady cadence synthesised in run_engine.c and
+     * the bearing turns at a constant rate, so the dead-reckoned trail closes
+     * into a circle - for screenshots/video when a real outdoor run is not
+     * possible.  The trail is SIMULATED (say so in the video); flash the normal
+     * build afterwards. */
+    run_start(&g_app.run);
+    g_app.run.heading_deg = 0.0f;      /* relative bearing, anchored at boot */
+    g_app.run_saved = true;            /* never push the simulated run into history */
+    renderer_reset_live_fit(&g_renderer);
+    page_set(&g_app, PAGE_RUN);
+    printf("[App] demo run: %d spm + %.1f deg/s turn -> circular trail\n",
+           APP_DEMO_RUN_SPM, (double)APP_DEMO_RUN_YAW_DPS);
+#endif
+
     /* supervisor heartbeat */
     uint32_t hb = get_time_ms();
     uint32_t touch_check_ms = 0;

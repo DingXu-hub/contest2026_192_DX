@@ -23,11 +23,29 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/time.h>
 
 /* present in the HAL object but not declared in bf0_hal_audcodec.h */
 extern HAL_StatusTypeDef HAL_AUDCODEC_Config_ADCPath_Volume(
     AUDCODEC_HandleTypeDef *hacodec, int channel, int volume);
+extern int bf0_enable_pll(uint32_t freq, uint8_t type);
+
+/* ------------------------------------------------------------------ *
+ * bring-up experiment switches
+ *
+ * The official HAL leaves several steps to the caller (MspInit is empty and
+ * the ADC-path configuration is commented out of HAL_AUDCODEC_Init), so the
+ * only way to find which combination this board needs is to try them on the
+ * hardware.  `!mic try [n]` walks these variants and reports which one makes
+ * the ADC produce samples.  See docs/麦克风硬件与实现方案.md.
+ * ------------------------------------------------------------------ */
+static struct {
+    bool en_dly3;         /* CFG |= 3 << ADC_EN_DLY_SEL (vendor sets it for DAC)  */
+    bool pll_full;        /* bf0_enable_pll() instead of updata_pll_freq()+HAL_TURN_ON_PLL() */
+    bool analog_late;     /* analogue ADC path after the digital enable           */
+    bool vendor_adc_cfg;  /* also call the vendor Config_ADCPath()                */
+} s_try;
 
 /* DMA wiring for AUDCODEC ADC0, copied from the vendor header
  * vendor/sifli/chips/boards/include/config/sf32lb52x/dma_config.h (the app
@@ -170,6 +188,10 @@ bool mic_start(const mic_cfg_t *cfg)
     /* the HAL's MspInit is empty, so the caller must un-gate the blocks:
      * without these the codec registers accept writes but nothing runs
      * (measured: DMA IRQs stayed 0 for every clock configuration) */
+    /* NOTE: RCC_MOD_AUDPRC (bit 20, the audio data-path gate) was tried here
+     * as well - it does not make the ADC convert, and with it enabled the
+     * whole codec register block started reading back the bus magic pattern
+     * 0xc0dec000 when the system idles, so it is left alone. */
 #if defined(SF32LB52X)
     HAL_RCC_EnableModule(RCC_MOD_AUDCODEC);
 #else
@@ -183,9 +205,19 @@ bool mic_start(const mic_cfg_t *cfg)
     HAL_PIN_Set(PAD_PA09, GPIO_A9, PIN_NOPULL, 1);
 
     /* codec PLL: 49.152 MHz for the 16 kHz (48 k family) sample rates */
-    if (updata_pll_freq(s_cfg.pll_type) != 0)
-        printf("[Mic] pll lock failed for type %u\n", s_cfg.pll_type);
-    HAL_TURN_ON_PLL();
+    if (s_try.pll_full)
+    {
+        /* the vendor's full sequence: HXT audio buffer, bandgap, PLL config,
+         * VCO calibration loop and the lock check */
+        int r = bf0_enable_pll(49152000u, (uint8_t)s_cfg.pll_type);
+        printf("[Mic] bf0_enable_pll -> %d\n", r);
+    }
+    else
+    {
+        if (updata_pll_freq(s_cfg.pll_type) != 0)
+            printf("[Mic] pll lock failed for type %u\n", s_cfg.pll_type);
+        HAL_TURN_ON_PLL();
+    }
 
     memset(&s_adc_clk, 0, sizeof(s_adc_clk));
     s_adc_clk.samplerate         = s_cfg.sample_rate;
@@ -236,6 +268,27 @@ bool mic_start(const mic_cfg_t *cfg)
         return false;
     }
 
+    if (s_try.vendor_adc_cfg)
+    {
+        /* The vendor's HAL_AUDCODEC_Config_ADCPath() is not linked for this
+         * chip (it lives in the excluded bf0_hal_audcodec.c), so replicate its
+         * register write verbatim - it writes the ADC clock fields into CFG,
+         * not into ADC_CFG.  The experiment is to see whether that is what the
+         * hardware actually wants. */
+        uint32_t value =
+            MAKE_REG_VAL(s_cfg.clk_div, AUDCODEC_ADC_CFG_CLK_DIV_Msk,
+                         AUDCODEC_ADC_CFG_CLK_DIV_Pos)
+            | MAKE_REG_VAL(s_cfg.clk_src_sel, AUDCODEC_ADC_CFG_CLK_SRC_SEL_Msk,
+                           AUDCODEC_ADC_CFG_CLK_SRC_SEL_Pos)
+            | MAKE_REG_VAL(s_cfg.opmode, AUDCODEC_ADC_CFG_OP_MODE_Msk,
+                           AUDCODEC_ADC_CFG_OP_MODE_Pos)
+            | MAKE_REG_VAL(s_cfg.osr_sel, AUDCODEC_ADC_CFG_OSR_SEL_Msk,
+                          AUDCODEC_ADC_CFG_OSR_SEL_Pos);
+
+        hwp_audcodec->CFG = value;
+        printf("[Mic] vendor-style CFG write = %08lx\n", (unsigned long)value);
+    }
+
     if (HAL_AUDCODEC_Receive_DMA(&s_codec, s_dma_buf, sizeof(s_dma_buf),
                                  (s_cfg.channel == 1) ? HAL_AUDCODEC_ADC_CH1
                                                       : HAL_AUDCODEC_ADC_CH0) != HAL_OK)
@@ -251,11 +304,38 @@ bool mic_start(const mic_cfg_t *cfg)
     HAL_NVIC_EnableIRQ(MIC_DMA_IRQ);
 
     HAL_AUCODEC_Refgen_Init();
-    HAL_AUDCODEC_Config_Analog_ADCPath(&s_adc_clk);
+    if (!s_try.analog_late)
+        HAL_AUDCODEC_Config_Analog_ADCPath(&s_adc_clk);
 
     /* 52x uses the single block: enable the ADC path (the 56x/58x "LP"
      * variants of these macros do not exist here) */
     __HAL_AUDCODEC_ADC_ENABLE(&s_codec);
+
+    if (s_try.analog_late)
+        HAL_AUDCODEC_Config_Analog_ADCPath(&s_adc_clk);
+    if (s_try.en_dly3)
+        hwp_audcodec->CFG |= (3 << AUDCODEC_CFG_ADC_EN_DLY_SEL_Pos);
+
+    /* Dump the analogue side right here: the codec register block reads back
+     * the bus magic pattern once the PM gates its clock, so an outside
+     * `!mic regs` a second later shows nothing useful. */
+    printf("[MicCFG] CFG=%08lx ADC_CFG=%08lx CH0=%08lx ANA=%08lx REFGEN=%08lx\n",
+           (unsigned long)hwp_audcodec->CFG,
+           (unsigned long)hwp_audcodec->ADC_CFG,
+           (unsigned long)hwp_audcodec->ADC_CH0_CFG,
+           (unsigned long)hwp_audcodec->ADC_ANA_CFG,
+           (unsigned long)hwp_audcodec->REFGEN_CFG);
+    printf("[MicCFG] ADC1_1=%08lx ADC1_2=%08lx ADC2_1=%08lx ADC2_2=%08lx "
+           "PLL5=%08lx PLL6=%08lx PLL0=%08lx STAT=%08lx BG0=%08lx\n",
+           (unsigned long)hwp_audcodec->ADC1_CFG1,
+           (unsigned long)hwp_audcodec->ADC1_CFG2,
+           (unsigned long)hwp_audcodec->ADC2_CFG1,
+           (unsigned long)hwp_audcodec->ADC2_CFG2,
+           (unsigned long)hwp_audcodec->PLL_CFG5,
+           (unsigned long)hwp_audcodec->PLL_CFG6,
+           (unsigned long)hwp_audcodec->PLL_CFG0,
+           (unsigned long)hwp_audcodec->PLL_STAT,
+           (unsigned long)hwp_audcodec->BG_CFG0);
 
     s_running = true;
     report_activity();
@@ -299,6 +379,61 @@ void mic_stats_reset(void)
     s_stats_sumsq = 0;
 }
 
+/* Run one bring-up variant end-to-end and report whether it produced data.
+ * Returns 1 = samples arrived, 0 = no data, -1 = start refused. */
+int mic_try(int variant)
+{
+    mic_cfg_t cfg;
+    uint32_t n = 0;
+    int32_t peak = 0, rms = 0;
+    uint32_t entry0, entry1;
+    struct timeval tv0, tv1;
+
+    memset(&s_try, 0, sizeof(s_try));
+    switch (variant)
+    {
+    case 1: s_try.en_dly3 = true; break;
+    case 2: s_try.pll_full = true; break;
+    case 3: s_try.analog_late = true; break;
+    case 4: s_try.vendor_adc_cfg = true; break;
+    case 5: s_try.en_dly3 = s_try.pll_full = s_try.analog_late = true; break;
+    case 6: s_try.en_dly3 = s_try.pll_full = s_try.analog_late =
+            s_try.vendor_adc_cfg = true; break;
+    default: break;                       /* 0 = current baseline */
+    }
+
+    mic_cfg_default(&cfg);
+    entry0 = (uint32_t)hwp_audcodec->ADC_CH0_ENTRY;
+    if (!mic_start(&cfg))
+    {
+        printf("[MicTRY] v%d start failed\n", variant);
+        return -1;
+    }
+
+    gettimeofday(&tv0, NULL);
+    do
+    {
+        usleep(50000);
+        mic_stats(&n, &peak, &rms);
+        gettimeofday(&tv1, NULL);
+    }
+    while (n == 0 && (tv1.tv_sec - tv0.tv_sec) * 1000 +
+                     (tv1.tv_usec - tv0.tv_usec) / 1000 < 500);
+
+    entry1 = (uint32_t)hwp_audcodec->ADC_CH0_ENTRY;
+    printf("[MicTRY] v%d en_dly=%d pll_full=%d analog_late=%d vendor_cfg=%d "
+           "-> samples=%lu peak=%ld rms=%ld entry %08lx->%08lx CFG=%08lx "
+           "RCC_ENR2=%08lx RSTR2=%08lx\n",
+           variant, (int)s_try.en_dly3, (int)s_try.pll_full,
+           (int)s_try.analog_late, (int)s_try.vendor_adc_cfg,
+           (unsigned long)n, (long)peak, (long)rms,
+           (unsigned long)entry0, (unsigned long)entry1,
+           (unsigned long)hwp_audcodec->CFG,
+           (unsigned long)hwp_hpsys_rcc->ENR2,
+           (unsigned long)hwp_hpsys_rcc->RSTR2);
+    return n > 0 ? 1 : 0;
+}
+
 void mic_stats(uint32_t *samples, int32_t *peak, int32_t *rms)
 {
     uint32_t n = s_stats_n;
@@ -323,6 +458,18 @@ void mic_dump_regs(void)
            (unsigned long)hwp_audcodec->ADC_CH0_ENTRY);
     printf("[MicREG] CH1_CFG=%08lx CH1_ENTRY=%08lx\n",
            (unsigned long)hwp_audcodec->ADC_CH1_CFG,
+           (unsigned long)hwp_audcodec->ADC_CH1_ENTRY);
+    printf("[MicREG] ANA=%08lx REFGEN=%08lx ADC1_1=%08lx ADC1_2=%08lx ADC2_1=%08lx ADC2_2=%08lx\n",
+           (unsigned long)hwp_audcodec->ADC_ANA_CFG,
+           (unsigned long)hwp_audcodec->REFGEN_CFG,
+           (unsigned long)hwp_audcodec->ADC1_CFG1,
+           (unsigned long)hwp_audcodec->ADC1_CFG2,
+           (unsigned long)hwp_audcodec->ADC2_CFG1,
+           (unsigned long)hwp_audcodec->ADC2_CFG2);
+    printf("[MicREG] PLL5=%08lx PLL6=%08lx ENTRY0=%08lx ENTRY1=%08lx\n",
+           (unsigned long)hwp_audcodec->PLL_CFG5,
+           (unsigned long)hwp_audcodec->PLL_CFG6,
+           (unsigned long)hwp_audcodec->ADC_CH0_ENTRY,
            (unsigned long)hwp_audcodec->ADC_CH1_ENTRY);
     printf("[MicREG] PLL2=%08lx PLL3=%08lx STAT=%08lx BG0=%08lx BG1=%08lx BG2=%08lx\n",
            (unsigned long)hwp_audcodec->PLL_CFG2,

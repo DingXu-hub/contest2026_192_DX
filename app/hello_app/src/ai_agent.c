@@ -479,6 +479,29 @@ static void handle_line(char *line)
                 else
                     snprintf(b, sizeof(b), "mic ch%u start failed", cfg.channel);
             }
+            else if (!strncmp(arg, "try", 3))
+            {
+                int v = (arg[3] == ' ') ? (int)strtol(arg + 4, NULL, 10) : -1;
+
+                if (v < 0)
+                {
+                    int i, hit = 0;
+
+                    for (i = 0; i <= 6; i++)
+                        if (mic_try(i) == 1)
+                            hit++;
+                    snprintf(b, sizeof(b),
+                             "mic try: %d of 7 variants produced samples", hit);
+                }
+                else
+                {
+                    int r = mic_try(v);
+
+                    snprintf(b, sizeof(b), "mic try v%d -> %s", v,
+                             r == 1 ? "SAMPLES" : (r == 0 ? "no data"
+                                                          : "start failed"));
+                }
+            }
             else if (!strncmp(arg, "stats", 5))
             {
                 uint32_t n; int32_t peak, rms;

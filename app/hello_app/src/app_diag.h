@@ -19,4 +19,15 @@
  * be flashed once and turned off again. */
 #define APP_DEMO_SEED 0
 
+/* --- demo run simulation (default off) -------------------------------- *
+ * Turns the running engine into a deterministic simulator: the step
+ * detector is replaced by a steady cadence and the bearing is turned at a
+ * constant rate, so the dead-reckoned trail draws a CIRCLE on the run page.
+ * Use it for screenshots/video when a real outdoor run is not possible; the
+ * trail is then SIMULATED and must be labelled as such in the video.
+ * ---------------------------------------------------------------------- */
+#define APP_DEMO_RUN 0
+#define APP_DEMO_RUN_SPM 170        /* synthesised cadence, steps/minute */
+#define APP_DEMO_RUN_YAW_DPS 9.0f   /* turn rate -> one lap about every 40 s */
+
 #endif /* __APP_DIAG_H */
