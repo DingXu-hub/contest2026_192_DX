@@ -37,6 +37,7 @@ typedef struct {
     bool     answer_pending;
     uint32_t interactions;
     uint32_t proactive_count;
+    uint32_t last_coach_ms;           /* AI running coach pacing       */
     uint32_t timer_end_ms;            /* reminder countdown */
 } ai_agent_t;
 

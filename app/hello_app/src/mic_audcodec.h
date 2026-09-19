@@ -54,6 +54,9 @@ void mic_stats(uint32_t *samples, int32_t *peak, int32_t *rms);
 /* bring-up variant experiment: 1 = produced samples, 0 = no data, -1 = failed */
 int  mic_try(int variant);
 
+/* direct DMA/buffer evidence, independent of the IRQ statistics */
+void mic_probe(int ms);
+
 /* install the keep-awake callback (called from the capture paths) */
 void mic_set_activity_hook(void (*fn)(void));
 

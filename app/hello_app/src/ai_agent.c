@@ -198,7 +198,7 @@ static void tool_timer(int minutes)
 }
 
 static const char *g_help =
-    "tools: !start !stop !status !timer N !tip !link !time !http URL !att [test] !skills !skill N !mic .. !help | ?question";
+    "tools: !start !stop !status !timer N !tip !coach [sum] !link !time !http URL !att [test] !skills !skill N !mic .. !help | ?question";
 
 /* ---------------- LLM bridge ---------------- */
 
@@ -216,12 +216,67 @@ static void llm_ask(const char *prompt)
     ai_send(line);
 }
 
+/* ---------------- AI running coach ---------------- */
+
+/* The agent coaches the runner from the SAME numbers the run page shows, so
+ * the card and the screen never disagree.  `summary` switches between "advise
+ * me now" and "review that run".  The reply arrives through the normal LLM
+ * path (PC gateway) and is displayed as an AI card. */
+static void coach_ask(bool summary)
+{
+    const run_engine_t *re = g_ctx ? &g_ctx->run : NULL;
+    char dist[24], elap[24], pace[24], prompt[AI_LINE_MAX];
+
+    if (!re || re->state == RUN_IDLE)
+    {
+        ai_agent_notify("coach", "start a run first (!start)");
+        return;
+    }
+
+    run_format_distance(re, dist, sizeof(dist), false);
+    run_format_elapsed(re, elap, sizeof(elap));
+    run_format_pace(re, pace, sizeof(pace), false);
+
+    /* ASCII only: the CH340 console mangles non-ASCII bytes, so a Chinese
+     * prompt reaches the gateway as "????" (measured).  The reply language is
+     * requested in words instead. */
+    snprintf(prompt, sizeof(prompt),
+             "You are the running coach inside a smartwatch. Live run data: "
+             "distance %s km, elapsed %s, current pace %s /km, average pace "
+             "%ld s/km, cadence %.0f spm, steps %lu, state %s. "
+             "%s Reply in Chinese with ONE short sentence of at most 24 "
+             "Chinese characters. No pleasantries, do not repeat the numbers.",
+             dist, elap, pace, (long)re->avg_pace_s_per_km,
+             (double)re->cadence_spm, (unsigned long)re->steps,
+             re->state == RUN_RUNNING ? "running"
+                                      : (re->state == RUN_PAUSED ? "paused"
+                                                                 : "finished"),
+             summary ? "Review this run and give one improvement."
+                     : "Give one thing the runner should do right now.");
+
+    llm_ask(prompt);
+    ai_send(summary ? "@AI coach-summary" : "@AI coach-live");
+}
+
 /* ---------------- proactive engine ---------------- */
 
 static void proactive_check(void)
 {
     static uint32_t last_proactive;
     uint32_t t = now_ms();
+
+    /* AI-enabled running: while a run is in progress the coach speaks up on
+     * its own every 3 minutes - the device decides when, the LLM decides
+     * what, and the result lands on the wrist as a card. */
+    if (g_ctx && g_ctx->run.state == RUN_RUNNING &&
+        (t - g_ai.last_coach_ms) > 180000u &&
+        (t - g_ai.last_prompt_ms) > 60000u)
+    {
+        g_ai.last_coach_ms = t;
+        g_ai.proactive_count++;
+        coach_ask(false);
+        return;
+    }
 
     if (g_ai.timer_end_ms && t >= g_ai.timer_end_ms)
     {
@@ -502,6 +557,16 @@ static void handle_line(char *line)
                                                           : "start failed"));
                 }
             }
+            else if (!strncmp(arg, "probe", 5))
+            {
+                if (g_ctx && g_ctx->pm)
+                {
+                    pm_report_activity(g_ctx->pm);
+                    pm_enter_active(g_ctx->pm);
+                }
+                mic_probe(500);
+                snprintf(b, sizeof(b), "probe done (see [MicPROBE])");
+            }
             else if (!strncmp(arg, "stats", 5))
             {
                 uint32_t n; int32_t peak, rms;
@@ -601,6 +666,17 @@ static void handle_line(char *line)
             ai_send("@TOOL mic");
             ai_send(b);
             ai_agent_notify("mic", b);
+        }
+        else if (!strncmp(line + 1, "coach", 5))
+        {
+            /* AI running coach: uses the live run state (and the same numbers
+             * the run page draws) as the prompt context */
+            const char *arg = line + 6;
+
+            while (*arg == ' ')
+                arg++;
+            ai_send("@TOOL coach");
+            coach_ask(!strncmp(arg, "sum", 3));
         }
         else if (!strncmp(line + 1, "tip", 3))
         {

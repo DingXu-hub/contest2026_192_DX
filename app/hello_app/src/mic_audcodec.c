@@ -300,6 +300,39 @@ bool mic_start(const mic_cfg_t *cfg)
     /* 0 dB ADC path (the HAL's default leaves the volume from the last use) */
     HAL_AUDCODEC_Config_ADCPath_Volume(&s_codec, s_cfg.channel, 0);
 
+    /* The HAL starts the DMA inside Receive_DMA but throws the status away,
+     * and the channel was measured with CCR.EN = 0 afterwards (so nothing ever
+     * moved).  Kick it here as well and report what the registers say - if the
+     * start refuses, this is our bug, not the codec's. */
+    {
+        HAL_StatusTypeDef st = HAL_DMA_Start_IT(
+            &s_dma,
+            (uint32_t)&hwp_audcodec->ADC_CH0_ENTRY,
+            (uint32_t)s_dma_buf, MIC_DMA_BYTES / 4);
+
+        printf("[MicDMA] Start_IT -> %d ccr=%08lx cndtr=%lu\n", (int)st,
+               (unsigned long)s_dma.Instance->CCR,
+               (unsigned long)s_dma.Instance->CNDTR);
+
+        /* Watch the transfer from inside the start path: if CNDTR decrements
+         * the codec IS converting, and the earlier "no data" readings were an
+         * artefact of reading the registers after the PM gated the clocks. */
+        {
+            uint32_t c0 = s_dma.Instance->CNDTR;
+            uint32_t e0 = hwp_audcodec->ADC_CH0_ENTRY;
+            uint32_t n0 = s_stats_n;
+
+            usleep(150000);
+            printf("[MicLIVE] +150 ms: cndtr %lu->%lu entry %08lx->%08lx "
+                   "samples %lu->%lu irq=%lu\n",
+                   (unsigned long)c0, (unsigned long)s_dma.Instance->CNDTR,
+                   (unsigned long)e0,
+                   (unsigned long)hwp_audcodec->ADC_CH0_ENTRY,
+                   (unsigned long)n0, (unsigned long)s_stats_n,
+                   (unsigned long)s_half_irqs);
+        }
+    }
+
     HAL_NVIC_SetPriority(MIC_DMA_IRQ, 1, 0);
     HAL_NVIC_EnableIRQ(MIC_DMA_IRQ);
 
@@ -488,6 +521,60 @@ void mic_dump_regs(void)
            (unsigned long)s_dma.Instance->CCR,
            (unsigned long)s_dma.Instance->CNDTR,
            (int)s_running);
+}
+
+/* Direct, IRQ-independent evidence.  Our own stats only move when the HAL's
+ * DMA callbacks run, so "samples=0" cannot distinguish
+ *   (a) the codec never converts            from
+ *   (b) the codec converts and the DMA moves but our IRQ wiring is wrong.
+ * This probe watches the DMA counter and scans the buffer itself. */
+void mic_probe(int ms)
+{
+    uint32_t cndtr0 = s_dma.Instance->CNDTR;
+    uint32_t ccr0 = s_dma.Instance->CCR;
+    uint32_t n0 = s_stats_n;
+    uint32_t irq0 = s_half_irqs;
+    uint32_t moved = 0;
+    int16_t maxabs0 = 0;
+    int16_t maxabs1 = 0;
+    uint32_t i;
+    int step;
+
+    for (i = 0; i < MIC_DMA_BYTES / 2; i++)
+    {
+        int16_t v = ((const int16_t *)s_dma_buf)[i];
+        int16_t a = v < 0 ? (int16_t)-v : v;
+
+        if (a > maxabs0)
+            maxabs0 = a;
+    }
+
+    for (step = 0; step < ms / 10; step++)
+    {
+        usleep(10000);
+        report_activity();
+        if (s_dma.Instance->CNDTR != cndtr0)
+            moved++;
+    }
+
+    for (i = 0; i < MIC_DMA_BYTES / 2; i++)
+    {
+        int16_t v = ((const int16_t *)s_dma_buf)[i];
+        int16_t a = v < 0 ? (int16_t)-v : v;
+
+        if (a > maxabs1)
+            maxabs1 = a;
+    }
+
+    printf("[MicPROBE] %d ms: cndtr %lu->%lu changed=%lu/%d ccr=%08lx->%08lx "
+           "stats %lu->%lu irq %lu->%lu bufsamples=%d bufmax %d->%d\n",
+           ms, (unsigned long)cndtr0,
+           (unsigned long)s_dma.Instance->CNDTR, (unsigned long)moved,
+           ms / 10, (unsigned long)ccr0,
+           (unsigned long)s_dma.Instance->CCR, (unsigned long)n0,
+           (unsigned long)s_stats_n, (unsigned long)irq0,
+           (unsigned long)s_half_irqs, MIC_DMA_BYTES / 2, (int)maxabs0,
+           (int)maxabs1);
 }
 
 /* bring-up probe: sample the codec data register directly (bypassing
